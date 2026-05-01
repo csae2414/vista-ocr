@@ -65,6 +65,9 @@ class VistaOCR(nn.Module):
         eos_id: int,
         max_new_tokens: int = 512,
         pad_id: int | None = None,
+        repetition_penalty: float = 1.0,
+        no_repeat_ngram_size: int = 0,
+        min_new_tokens: int = 0,
     ) -> Tensor:
         memory = self.encode(images)
         return self.decoder.generate_greedy(
@@ -73,6 +76,9 @@ class VistaOCR(nn.Module):
             eos_id=eos_id,
             max_new_tokens=max_new_tokens,
             pad_id=pad_id,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
+            min_new_tokens=min_new_tokens,
         )
 
 

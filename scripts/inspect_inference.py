@@ -52,6 +52,19 @@ def main() -> None:
     ap.add_argument("--page-w", type=int, default=850)
     ap.add_argument("--max-new-tokens", type=int, default=2048)
     ap.add_argument("--quiet", action="store_true")
+    # Anti-repetition knobs. These help when the model is in early
+    # training and stuck in n-gram loops (`Re ad ad ad...`).
+    # See IMPROVEMENTS.md A1 for the trade-offs.
+    ap.add_argument("--repetition-penalty", type=float, default=1.05,
+                    help="Light penalty (>1.0) on already-emitted tokens. "
+                         "Compounds across the sequence, so keep it low.")
+    ap.add_argument("--no-repeat-ngram-size", type=int, default=0,
+                    help="Forbid any n-gram already emitted. AT VALUE 3 "
+                         "this BREAKS our line-structure trigram <y><word><x> "
+                         "and is unsafe; only enable >= 6.")
+    ap.add_argument("--min-new-tokens", type=int, default=0,
+                    help="Force at least N tokens before EOS. >0 hallucinates "
+                         "content on genuinely short pages.")
     args = ap.parse_args()
 
     setup_logging(level="WARNING" if args.quiet else "INFO")
@@ -75,6 +88,9 @@ def main() -> None:
         max_new_tokens=args.max_new_tokens,
         target_h=args.page_h, target_w=args.page_w,
         pad_multiple=32, device="cuda",
+        repetition_penalty=args.repetition_penalty,
+        no_repeat_ngram_size=args.no_repeat_ngram_size,
+        min_new_tokens=args.min_new_tokens,
     )
 
     from vista_ocr.data.preprocess import (

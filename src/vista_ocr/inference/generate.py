@@ -30,6 +30,13 @@ class InferenceConfig:
     target_h: int = 3508
     target_w: int = 2480
     device: str = "cpu"
+    # Anti-repetition / length knobs. All default off so benchmark
+    # decoding stays comparable to the paper's. Only the inspection
+    # script enables them with conservative values; do NOT turn them
+    # on inside finetune_eval.py.
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
+    min_new_tokens: int = 0
 
 
 def _prepare_image(img, cfg: InferenceConfig) -> torch.Tensor:
@@ -55,6 +62,9 @@ def _generate(
         eos_id=tokenizer.eos_id,
         max_new_tokens=cfg.max_new_tokens,
         pad_id=tokenizer.pad_id,
+        repetition_penalty=cfg.repetition_penalty,
+        no_repeat_ngram_size=cfg.no_repeat_ngram_size,
+        min_new_tokens=cfg.min_new_tokens,
     )
     return out[0].tolist()
 

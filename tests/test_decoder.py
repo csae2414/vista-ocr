@@ -72,6 +72,56 @@ def test_generate_rejects_pad_eq_eos(tiny_decoder: MBartDecoder):
         )
 
 
+def test_anti_repetition_knobs_default_off(tiny_decoder: MBartDecoder):
+    """Default anti-repetition values must produce identical output to a
+    call without the knobs (bit-exact equivalence). Otherwise paper-
+    comparable benchmark numbers silently shift."""
+    torch.manual_seed(0)
+    prompt = torch.randint(0, tiny_decoder.vocab_size, (1, 2))
+    memory = torch.randn(1, 4, tiny_decoder.d_model)
+    base = tiny_decoder.generate_greedy(
+        prompt_ids=prompt, encoder_hidden_states=memory,
+        eos_id=0, pad_id=1, max_new_tokens=8,
+    )
+    explicit = tiny_decoder.generate_greedy(
+        prompt_ids=prompt, encoder_hidden_states=memory,
+        eos_id=0, pad_id=1, max_new_tokens=8,
+        repetition_penalty=1.0, no_repeat_ngram_size=0, min_new_tokens=0,
+    )
+    assert torch.equal(base, explicit)
+
+
+def test_repetition_penalty_changes_output(tiny_decoder: MBartDecoder):
+    """A penalty large enough to invert top-1 must change the sequence."""
+    torch.manual_seed(7)
+    prompt = torch.randint(0, tiny_decoder.vocab_size, (1, 2))
+    memory = torch.randn(1, 4, tiny_decoder.d_model)
+    plain = tiny_decoder.generate_greedy(
+        prompt_ids=prompt, encoder_hidden_states=memory,
+        eos_id=0, pad_id=1, max_new_tokens=10,
+    )
+    penal = tiny_decoder.generate_greedy(
+        prompt_ids=prompt, encoder_hidden_states=memory,
+        eos_id=0, pad_id=1, max_new_tokens=10,
+        repetition_penalty=10.0,        # very aggressive
+    )
+    assert plain.shape == penal.shape
+    assert not torch.equal(plain, penal)
+
+
+def test_min_new_tokens_blocks_early_eos(tiny_decoder: MBartDecoder):
+    """min_new_tokens forces output length even when the model wants
+    eos. Verified by checking length >= min_new_tokens (when budget allows)."""
+    torch.manual_seed(11)
+    prompt = torch.randint(2, tiny_decoder.vocab_size, (1, 2))
+    memory = torch.randn(1, 4, tiny_decoder.d_model)
+    out = tiny_decoder.generate_greedy(
+        prompt_ids=prompt, encoder_hidden_states=memory,
+        eos_id=0, pad_id=1, max_new_tokens=12, min_new_tokens=8,
+    )
+    assert out.shape[1] >= 8
+
+
 def test_freeze_decoder_flag():
     enc = FCNEncoderWidther(input_channels=1, dropout=0.0)
     dec = small_random_decoder(vocab_size=64, d_model=1024, n_layers=1, n_heads=4)

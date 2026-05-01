@@ -150,6 +150,9 @@ class MBartDecoder(nn.Module):
         encoder_attention_mask: Tensor | None = None,
         num_beams: int = 1,
         pad_id: int | None = None,
+        repetition_penalty: float = 1.0,
+        no_repeat_ngram_size: int = 0,
+        min_new_tokens: int = 0,
     ) -> Tensor:
         """KV-cache-backed generation via HuggingFace ``generate``.
 
@@ -160,6 +163,20 @@ class MBartDecoder(nn.Module):
         ``pad_id`` MUST differ from ``eos_id``; otherwise HuggingFace's
         ``generate`` cannot distinguish padding from end-of-sequence and
         stops at step 1. Defaults to ``0`` if not provided.
+
+        Anti-repetition / length knobs (default off):
+
+        * ``repetition_penalty`` -- divides the logit of any prior token
+          by this factor each step. Compounds across the sequence; do
+          NOT use for benchmark numbers (changes output distribution).
+          Safe inspection value: 1.05.
+        * ``no_repeat_ngram_size`` -- forbid any n-gram that already
+          appeared. Our serialisation deliberately repeats trigrams of
+          shape ``<y> word <x>`` between lines, so size 3 BREAKS line
+          structure. Use 6+ if at all. 0 = off.
+        * ``min_new_tokens`` -- minimum new tokens before EOS may
+          fire. Forcing length on genuinely short pages hallucinates;
+          0 = off.
         """
         if pad_id is None:
             pad_id = 0
@@ -176,10 +193,13 @@ class MBartDecoder(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,
             do_sample=False,
             num_beams=num_beams,
             eos_token_id=eos_id,
             pad_token_id=pad_id,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             use_cache=True,
         )
         return out[:, prompt_len:]

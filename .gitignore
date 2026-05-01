@@ -44,3 +44,4 @@ docs/_build/
 .env
 .envrc
 *.local.yaml
+IMPROVEMENTS.md
