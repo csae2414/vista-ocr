@@ -135,6 +135,18 @@ def _iter_batches(
         yield collate(buf, tokenizer, pre_cfg)
 
 
+def _peek_first(it: Iterable) -> tuple[object, Iterator]:
+    """Look at the first element without consuming the iterator."""
+    inner = iter(it)
+    first = next(inner)
+
+    def _chain() -> Iterator:
+        yield first
+        yield from inner
+
+    return first, _chain()
+
+
 def train(
     model: VistaOCR,
     sample_stream: Iterable[Sample],
@@ -194,9 +206,20 @@ def train(
         LOG.info("Resumed from %s at step %d (best_val_loss=%.4f)",
                  resume_path, step, best_val_loss)
 
-    micro_iter = _iter_batches(
-        sample_stream, tokenizer, pre_cfg, cfg.micro_batch_size
-    )
+    # Accept either a stream of Samples (collate inline -- simple, slow) or
+    # a stream of pre-collated Batches (e.g. from
+    # vista_ocr.data.dataloader.make_pdfa_dataloader -- multi-worker, fast).
+    first, sample_stream = _peek_first(sample_stream)
+    if isinstance(first, Batch):
+        micro_iter = sample_stream
+    elif isinstance(first, Sample):
+        micro_iter = _iter_batches(
+            sample_stream, tokenizer, pre_cfg, cfg.micro_batch_size
+        )
+    else:
+        raise TypeError(
+            f"sample_stream must yield Sample or Batch, got {type(first).__name__}"
+        )
 
     for batch in micro_iter:
         if max_steps is not None and step >= max_steps:

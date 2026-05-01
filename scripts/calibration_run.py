@@ -13,7 +13,9 @@ from pathlib import Path
 
 import torch
 
+from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader
 from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
+from vista_ocr.data.preprocess import PreprocessConfig
 from vista_ocr.logging_config import setup_logging
 from vista_ocr.models.decoder import MBartDecoder, small_random_decoder
 from vista_ocr.models.encoder import FCNEncoderWidther
@@ -36,6 +38,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=3e-4)        # stage-1a frozen-decoder LR
     ap.add_argument("--use-mbart", action="store_true",
                     help="Real 12-layer mbart-large-50 decoder (downloads ~2 GB)")
+    ap.add_argument("--num-workers", type=int, default=0,
+                    help="DataLoader worker processes for PDFA shards. 0 = inline (slow).")
     ap.add_argument("--log-file", type=Path, default=Path("logs/calibration.log"))
     args = ap.parse_args()
 
@@ -64,8 +68,25 @@ def main() -> None:
     model = VistaOCR(encoder=encoder, decoder=decoder)
     LOG.info("Total params: %.1fM", sum(p.numel() for p in model.parameters()) / 1e6)
 
-    pdfa_cfg = PdfaConfig(shards=[str(args.shard)])
-    sample_stream = iter_pdfa(pdfa_cfg)
+    pre_cfg = PreprocessConfig(
+        target_h=args.page_h, target_w=args.page_w, pad_multiple=32
+    )
+    if args.num_workers > 0:
+        LOG.info("Using DataLoader with %d workers + prefetch=4", args.num_workers)
+        loader = make_pdfa_dataloader(
+            shards=[str(args.shard)],
+            tokenizer=tokenizer,
+            pre_cfg=pre_cfg,
+            dl_cfg=DataLoaderConfig(
+                micro_batch_size=args.micro_bs,
+                num_workers=args.num_workers,
+                prefetch_factor=4,
+            ),
+        )
+        sample_stream = iter(loader)
+    else:
+        LOG.info("Using inline (single-process) PDFA iterator")
+        sample_stream = iter_pdfa(PdfaConfig(shards=[str(args.shard)]))
 
     train_cfg = TrainConfig(
         base_lr=args.lr,
