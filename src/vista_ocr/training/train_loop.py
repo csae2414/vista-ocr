@@ -305,10 +305,18 @@ def train(
             and step > 0
             and step % cfg.val.every == 0
         ):
+            # Free fragmented allocator pages -- without this, the val
+            # forward (which runs without grad checkpointing materialised
+            # activations) can hit transient memory pressure that surfaces
+            # as CUBLAS_STATUS_EXECUTION_FAILED on a 24 GB card.
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             val_batches = cfg.val_batches_factory()
             val_stats = run_validation(
                 model, val_batches, cfg.val_loss_fn, max_batches=cfg.val.max_batches,
             )
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             LOG.info("validation step=%d val_loss=%.4f n=%d (%.1fs)",
                      step, val_stats["val_loss"], val_stats["n_batches"],
                      val_stats["elapsed_s"])

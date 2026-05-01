@@ -98,19 +98,24 @@ def main() -> None:
             yield collate([s], tokenizer, pre_cfg)
 
     def val_loss_fn(model, batch):
+        # PyTorch issue #132613 + cuBLAS workspace contention: bf16
+        # autocast hits CUBLAS_STATUS_EXECUTION_FAILED in MBart eager
+        # self-attention specifically in eval mode + no_grad + autocast.
+        # Diagnosed empirically and matches the failure mode reported in
+        # the PyTorch issue. Workaround: run val in fp32 (no autocast).
+        # Val is infrequent so the slower-but-stable path is fine.
         device = next(model.parameters()).device
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model(
-                batch.images.to(device), batch.decoder_input_ids.to(device),
-            )
-            out = combined_loss(
-                logits=logits,
-                labels=batch.labels.to(device),
-                spatial_token_ids=spatial_ids,
-                lambda_text=1.0,
-                pad_id=batch.pad_id,
-                prompt_mask=batch.prompt_mask.to(device),
-            )
+        logits = model(
+            batch.images.to(device), batch.decoder_input_ids.to(device),
+        )
+        out = combined_loss(
+            logits=logits,
+            labels=batch.labels.to(device),
+            spatial_token_ids=spatial_ids,
+            lambda_text=1.0,
+            pad_id=batch.pad_id,
+            prompt_mask=batch.prompt_mask.to(device),
+        )
         return out.loss
 
     train_cfg = TrainConfig(

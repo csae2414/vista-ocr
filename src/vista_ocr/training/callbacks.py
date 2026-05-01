@@ -148,24 +148,45 @@ def run_validation(
 ) -> dict:
     """Compute mean loss over the first ``max_batches`` of ``val_batches``.
 
-    ``loss_fn`` takes ``(model, batch)`` and returns a scalar tensor. Kept
-    abstract so the same validator works for OCR / OCR+layout / region-OCR.
+    Notes:
+    - ``loss_fn`` takes ``(model, batch)`` and returns a scalar tensor.
+    - We keep gradient checkpointing **on** during validation. Under
+      ``torch.no_grad()`` the recomputation overhead is irrelevant and
+      the materialised-activation peak memory would otherwise be ~3x
+      higher than training.
     """
     was_training = model.training
     model.eval()
     losses: list[float] = []
     t0 = time.perf_counter()
-    with torch.no_grad():
+    skipped = 0
+    # Force-disable autocast for the entire val pass. Issue #132613 in
+    # PyTorch + cuBLAS internal allocation contention have been observed
+    # to surface as CUBLAS_STATUS_EXECUTION_FAILED in eval mode + bf16
+    # autocast on the MBart eager attention path. fp32 val is correct
+    # and slow-but-rare (val runs every val.every steps).
+    with torch.no_grad(), torch.autocast(
+        device_type="cuda" if torch.cuda.is_available() else "cpu",
+        dtype=torch.float32, enabled=False,
+    ):
         for i, batch in enumerate(val_batches):
             if i >= max_batches:
                 break
-            losses.append(float(loss_fn(model, batch)))
+            try:
+                losses.append(float(loss_fn(model, batch)))
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                skipped += 1
+                LOG.warning("val batch %d skipped: %s", i, exc)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
     if was_training:
         model.train()
     if not losses:
-        return {"val_loss": float("nan"), "n_batches": 0, "elapsed_s": 0.0}
+        return {"val_loss": float("nan"), "n_batches": 0, "elapsed_s": 0.0,
+                "skipped": skipped}
     return {
         "val_loss": sum(losses) / len(losses),
         "n_batches": len(losses),
         "elapsed_s": time.perf_counter() - t0,
+        "skipped": skipped,
     }
