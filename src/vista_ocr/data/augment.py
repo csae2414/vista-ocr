@@ -32,6 +32,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+from vista_ocr.data.bbox import BBox
 from vista_ocr.tokenizer.tokenizer import Line
 
 LOG = logging.getLogger(__name__)
@@ -112,7 +113,10 @@ class Augmenter:
 
         # Albumentations works on numpy arrays. Grayscale PIL ('L') -> 2D.
         img_np = np.asarray(image.convert("L"), dtype=np.uint8)
-        bboxes = [list(map(float, ln.bbox)) for ln in lines]
+        # pascal_voc format = (x1, y1, x2, y2) in pixel space; BBox
+        # exports it directly via to_albumentations.
+        bboxes = [list(BBox.from_xyxy(*ln.bbox).to_albumentations())
+                  for ln in lines]
         # min_visibility filters out bboxes that go too far out; we keep
         # the ``line_idx`` so we can pair surviving bboxes back to the
         # right text strings even when reordered.
@@ -123,10 +127,10 @@ class Augmenter:
 
         new_lines: list[Line] = []
         for bbox, idx in zip(out["bboxes"], out["line_idx"], strict=True):
-            x1, y1, x2, y2 = (int(round(v)) for v in bbox)
-            if x2 <= x1 or y2 <= y1:
+            bb = BBox.from_albumentations(*bbox)
+            if bb.is_degenerate():
                 continue
-            new_lines.append(Line(text=lines[idx].text, bbox=(x1, y1, x2, y2)))
+            new_lines.append(Line(text=lines[idx].text, bbox=bb.to_xyxy()))
         return new_img, new_lines
 
 

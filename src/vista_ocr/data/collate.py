@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import torch
 
+from vista_ocr.data.bbox import BBox
 from vista_ocr.data.preprocess import (
     PreprocessConfig,
     pad_to_multiple,
@@ -56,8 +57,9 @@ def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[in
         prompt = tokenizer.build_region_ocr_prompt(sample.query_bbox)
         # Output: just the text inside the queried bbox (lines that fall in it).
         output = []
+        query_box = BBox.from_xyxy(*sample.query_bbox)
         for line in sample.lines:
-            if _bbox_contains(sample.query_bbox, line.bbox):
+            if query_box.contains(BBox.from_xyxy(*line.bbox)):
                 output.extend(tokenizer.encode_text(line.text))
     elif sample.task == "find_it":
         if sample.query_text is None:
@@ -84,12 +86,6 @@ def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[in
         keep_after_prompt = MAX_TARGET_TOKENS - prompt_len - 1
         seq = seq[:prompt_len] + seq[prompt_len: prompt_len + keep_after_prompt] + [tokenizer.eos_id]
     return seq, prompt_len
-
-
-def _bbox_contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int, int]) -> bool:
-    ox1, oy1, ox2, oy2 = outer
-    ix1, iy1, ix2, iy2 = inner
-    return ox1 <= ix1 and oy1 <= iy1 and ox2 >= ix2 and oy2 >= iy2
 
 
 def _maybe_build_augmenter(cfg):

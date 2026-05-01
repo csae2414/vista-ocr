@@ -87,3 +87,113 @@ def test_rotation_keeps_bboxes_close_to_analytic():
     cy_new = (new_bbox[1] + new_bbox[3]) / 2
     assert abs(cx_new - cx_old) < 5
     assert abs(cy_new - cy_old) < 5
+
+
+# B2 gap closed: tests that exercise the *Augmenter wrapper*, not
+# Albumentations directly. These would catch a wrapper bug that the
+# direct-Albumentations test above misses (e.g. dropping bboxes,
+# swapping xyxy ordering, or losing the line_idx pairing).
+
+def test_wrapper_identity_when_pipeline_returns_unchanged_bboxes():
+    """With rotate=0 / no augments triggered, the wrapper round-trips
+    bboxes through Albumentations and back to Line tuples unchanged."""
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=0.0,
+        brightness_limit=0.0, contrast_limit=0.0,
+        blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+        p_each=0.0,  # nothing fires
+    ))
+    img = Image.new("L", (200, 100), 200)
+    lines_in = [
+        Line(text="alpha", bbox=(10, 20, 50, 40)),
+        Line(text="beta", bbox=(60, 20, 100, 40)),
+        Line(text="gamma", bbox=(110, 20, 150, 40)),
+    ]
+    _, lines_out = aug(img, lines_in)
+    # All three survive, in order, with bboxes intact (the round-trip
+    # through Albumentations float pascal_voc + BBox.from_albumentations
+    # must not corrupt int xyxy values).
+    assert [ln.text for ln in lines_out] == ["alpha", "beta", "gamma"]
+    assert [ln.bbox for ln in lines_out] == [ln.bbox for ln in lines_in]
+
+
+def test_wrapper_preserves_text_idx_pairing_under_rotation():
+    """B2: rotation must not silently swap text→bbox pairings. We feed
+    three labelled boxes, rotate by 2 deg, and assert the texts come
+    back paired with bboxes whose centres are within 5 px of the
+    analytic rotated centres of the *original* bboxes."""
+    import math
+
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=2.0,
+        brightness_limit=0.0, contrast_limit=0.0,
+        blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+        # Force rotation only, no other transforms, no min_visibility drops.
+        p_each=1.0, bbox_min_visibility=0.0,
+    ))
+    img = Image.new("L", (200, 100), 200)
+    lines_in = [
+        Line(text="one",   bbox=(20, 20, 60, 40)),
+        Line(text="two",   bbox=(80, 20, 120, 40)),
+        Line(text="three", bbox=(140, 20, 180, 40)),
+    ]
+    out_img, lines_out = aug(img, lines_in)
+    # Image unchanged in size.
+    assert out_img.size == (200, 100)
+    # Same number of lines, same texts, same order (Albumentations does
+    # not reorder when min_visibility=0 and no boxes are dropped).
+    assert [ln.text for ln in lines_out] == [ln.text for ln in lines_in]
+
+    # Each output bbox's centre must be within 5 px of an analytic
+    # rotation around the image centre (200/2, 100/2) = (100, 50).
+    cx0, cy0 = 100, 50
+    cos_a = math.cos(math.radians(2.0))
+    sin_a = math.sin(math.radians(2.0))
+    for src, dst in zip(lines_in, lines_out, strict=True):
+        sx = (src.bbox[0] + src.bbox[2]) / 2
+        sy = (src.bbox[1] + src.bbox[3]) / 2
+        # Albumentations' Rotate with border_mode=replicate uses a
+        # standard 2D rotation around the image centre.
+        ex = cx0 + (sx - cx0) * cos_a - (sy - cy0) * sin_a
+        ey = cy0 + (sx - cx0) * sin_a + (sy - cy0) * cos_a
+        dx = (dst.bbox[0] + dst.bbox[2]) / 2
+        dy = (dst.bbox[1] + dst.bbox[3]) / 2
+        assert abs(dx - ex) < 5, f"{src.text}: cx_diff={dx - ex:.2f}"
+        assert abs(dy - ey) < 5, f"{src.text}: cy_diff={dy - ey:.2f}"
+
+
+def test_wrapper_filters_degenerate_output():
+    """If BBox.from_albumentations clamps a tiny inversion to
+    degenerate, the wrapper must filter it via is_degenerate() rather
+    than emit a zero-area Line. We assert this directly by feeding
+    the wrapper a synthetic Albumentations output through monkey-patch."""
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=2.0,
+        brightness_limit=0.0, contrast_limit=0.0,
+        blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+        p_each=0.0,
+    ))
+
+    img = Image.new("L", (200, 100), 200)
+    real_pipeline = aug._pipeline
+
+    def fake_pipeline(*, image, bboxes, line_idx):
+        # Simulate Albumentations returning two bboxes where one has
+        # been clamped to a degenerate single-pixel shape.
+        return {
+            "image": image,
+            "bboxes": [(10.0, 10.0, 50.0, 30.0), (60.0, 10.0, 60.4, 30.0)],
+            "line_idx": [0, 1],
+        }
+
+    aug._pipeline = fake_pipeline  # type: ignore[assignment]
+    try:
+        _, lines_out = aug(img, [
+            Line(text="keep", bbox=(10, 10, 50, 30)),
+            Line(text="drop", bbox=(60, 10, 70, 30)),
+        ])
+    finally:
+        aug._pipeline = real_pipeline
+
+    # Only the non-degenerate line survives.
+    assert [ln.text for ln in lines_out] == ["keep"]

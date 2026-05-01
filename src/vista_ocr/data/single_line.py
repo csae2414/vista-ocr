@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+from vista_ocr.data.bbox import BBox
 from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
 from vista_ocr.data.types import Sample
 from vista_ocr.tokenizer.tokenizer import Line
@@ -38,20 +39,18 @@ class SingleLineConfig:
 
 def crop_line(image: Image.Image, line: Line, cfg: SingleLineConfig) -> Sample | None:
     """Return a Sample carrying just one line, or None if it's degenerate."""
-    x1, y1, x2, y2 = line.bbox
-    h = y2 - y1
-    w = x2 - x1
-    if h < cfg.min_line_h or h > cfg.max_line_h or w < cfg.min_line_w:
+    src = BBox.from_xyxy(*line.bbox)
+    if (
+        src.height < cfg.min_line_h
+        or src.height > cfg.max_line_h
+        or src.width < cfg.min_line_w
+    ):
         return None
-    pad = cfg.pad_px
     img_w, img_h = image.size
-    cx1 = max(0, x1 - pad)
-    cy1 = max(0, y1 - pad)
-    cx2 = min(img_w, x2 + pad)
-    cy2 = min(img_h, y2 + pad)
-    if cx2 <= cx1 or cy2 <= cy1:
+    crop_box = src.pad(cfg.pad_px).clip_to(img_w=img_w, img_h=img_h)
+    if crop_box.is_degenerate():
         return None
-    crop = image.crop((cx1, cy1, cx2, cy2)).convert("L")
+    crop = image.crop(crop_box.to_xyxy()).convert("L")
     cw, ch = crop.size
     # Trivial bbox = the entire crop. Decoder still emits <x><y>...<x><y>.
     new_line = Line(text=line.text, bbox=(0, 0, cw, ch))

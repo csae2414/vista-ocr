@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+from vista_ocr.data.bbox import BBox
 from vista_ocr.data.preprocess import is_blank_image, is_latin_text
 from vista_ocr.data.types import Sample
 from vista_ocr.tokenizer.tokenizer import Line
@@ -52,22 +53,24 @@ class PdfaConfig:
 
 
 def _norm_bbox_to_pixels(
-    bbox: list[float], img_w: int, img_h: int
+    bbox: list[float], img_w: int, img_h: int,
 ) -> tuple[int, int, int, int] | None:
-    """Convert normalized ``[x, y, w, h]`` (page-relative, 0..1) to integer
-    pixel ``[x1, y1, x2, y2]``."""
+    """Wire-format normalised ``[x, y, w, h]`` -> pixel xyxy.
+
+    Returns ``None`` when the bbox is malformed or collapses to a
+    degenerate (zero-area) box after clipping. Bit-for-bit compatible
+    with the pre-:class:`BBox` implementation; pinned by tests in
+    ``tests/test_bbox.py::TestFromNormalisedXywh``.
+    """
     if len(bbox) != 4:
         return None
     x, y, w, h = bbox
     if w <= 0 or h <= 0:
         return None
-    x1 = max(0, int(round(x * img_w)))
-    y1 = max(0, int(round(y * img_h)))
-    x2 = min(img_w, int(round((x + w) * img_w)))
-    y2 = min(img_h, int(round((y + h) * img_h)))
-    if x2 <= x1 or y2 <= y1:
+    bb = BBox.from_normalised_xywh(x, y, w, h, img_w=img_w, img_h=img_h)
+    if bb.is_degenerate():
         return None
-    return (x1, y1, x2, y2)
+    return bb.to_xyxy()
 
 
 def _render_pdf_page(pdf_bytes: bytes, dpi: int) -> Iterator[Image.Image]:
