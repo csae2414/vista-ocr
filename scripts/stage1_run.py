@@ -20,8 +20,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from pathlib import Path
+
+# Avoid cuBLAS workspace contention on long bf16 attention matmuls --
+# stabilises a subtle transformers 4.44 + RTX 3090 + bf16 path.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import torch
 

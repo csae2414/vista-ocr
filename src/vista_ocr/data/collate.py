@@ -30,6 +30,14 @@ class Batch:
     pad_id: int
 
 
+# Hard cap on the decoder sequence length we feed into training. Pages
+# with hundreds of lines can produce >4000 tokens, and a particular bf16
+# self-attention path in transformers 4.44 raises CUBLAS_STATUS_EXECUTION_FAILED
+# at those lengths on a 24GB RTX 3090. Truncating preserves a meaningful
+# learning signal -- the prompt + first portion of lines fit fine.
+MAX_TARGET_TOKENS: int = 2048
+
+
 def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[int], int]:
     """Construct ``[prompt..., output..., </s>]`` and return the prompt
     length so the trainer can mask it out of the loss."""
@@ -67,6 +75,13 @@ def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[in
 
     seq = [tokenizer.bos_id, *prompt, *output, tokenizer.eos_id]
     prompt_len = 1 + len(prompt)  # bos + prompt are non-supervised positions
+
+    # Truncate runaway sequences. Keep the prompt intact (otherwise the
+    # task-conditioning header is lost) and the trailing eos_id; clip the
+    # middle.
+    if len(seq) > MAX_TARGET_TOKENS:
+        keep_after_prompt = MAX_TARGET_TOKENS - prompt_len - 1
+        seq = seq[:prompt_len] + seq[prompt_len: prompt_len + keep_after_prompt] + [tokenizer.eos_id]
     return seq, prompt_len
 
 
