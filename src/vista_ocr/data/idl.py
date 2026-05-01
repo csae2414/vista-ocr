@@ -28,15 +28,12 @@ class IdlConfig:
 
 
 def _decode_idl_record(record: dict) -> Sample | None:
-    img_bytes = None
-    payload: dict | None = None
-    for k, v in record.items():
-        if k.endswith((".png", ".jpg", ".jpeg")):
-            img_bytes = v
-        elif k.endswith(".json"):
-            payload = json.loads(v.decode("utf-8") if isinstance(v, bytes) else v)
-    if img_bytes is None or payload is None:
+    # webdataset strips the leading dot from extensions.
+    img_bytes = record.get("png") or record.get("jpg") or record.get("jpeg")
+    json_blob = record.get("json")
+    if img_bytes is None or json_blob is None:
         return None
+    payload = json.loads(json_blob.decode("utf-8") if isinstance(json_blob, bytes) else json_blob)
     img = Image.open(io.BytesIO(img_bytes)).convert("L")
 
     blocks = payload.get("blocks") or payload.get("lines") or []
