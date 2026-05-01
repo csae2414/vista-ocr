@@ -35,6 +35,7 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import torch  # noqa: E402
 
+from vista_ocr.data.augment import AugmentConfig  # noqa: E402
 from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader  # noqa: E402
 from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
 from vista_ocr.logging_config import setup_logging  # noqa: E402
@@ -74,6 +75,9 @@ def main() -> None:
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches "
                          "each val call. 0 disables.")
+    ap.add_argument("--augment", action="store_true",
+                    help="B2: enable train-time bbox-aware augmentation "
+                         "(rotation, brightness/contrast, blur, JPEG).")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -92,7 +96,13 @@ def main() -> None:
     model = VistaOCR(encoder=encoder, decoder=decoder)
     LOG.info("Total params: %.1fM", sum(p.numel() for p in model.parameters()) / 1e6)
 
-    pre_cfg = PreprocessConfig(target_h=args.page_h, target_w=args.page_w, pad_multiple=32)
+    aug_cfg = AugmentConfig(enabled=True) if args.augment else None
+    pre_cfg = PreprocessConfig(
+        target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
+        augment=aug_cfg,
+    )
+    if aug_cfg is not None:
+        LOG.info("B2: train-time augmentation enabled")
 
     train_loader = make_pdfa_dataloader(
         shards=[str(p) for p in args.train_shards],

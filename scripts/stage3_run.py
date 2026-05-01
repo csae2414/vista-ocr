@@ -23,6 +23,7 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import torch  # noqa: E402
 
+from vista_ocr.data.augment import AugmentConfig  # noqa: E402
 from vista_ocr.data.collate import collate  # noqa: E402
 from vista_ocr.data.mixture import MixedTaskStream, TaskMix  # noqa: E402
 from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa  # noqa: E402
@@ -72,6 +73,8 @@ def main() -> None:
                     help="B1: time-constant of the dropout schedule.")
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches.")
+    ap.add_argument("--augment", action="store_true",
+                    help="B2: enable train-time bbox-aware augmentation.")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -92,7 +95,13 @@ def main() -> None:
         load_checkpoint(args.init_from, model=model, optimizer=None,
                         map_location="cuda", strict=False, restore_rng=False)
 
-    pre_cfg = PreprocessConfig(target_h=args.page_h, target_w=args.page_w, pad_multiple=32)
+    aug_cfg = AugmentConfig(enabled=True) if args.augment else None
+    pre_cfg = PreprocessConfig(
+        target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
+        augment=aug_cfg,
+    )
+    if aug_cfg is not None:
+        LOG.info("B2: train-time augmentation enabled")
 
     # Stage-3 task mix (paper Section 3.3): equal weights on the four tasks.
     mix = TaskMix(weights={
