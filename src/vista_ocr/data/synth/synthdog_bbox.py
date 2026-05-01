@@ -65,10 +65,11 @@ def generate_sample(
         if y + cfg.line_height > cfg.canvas_h - cfg.margin:
             break
         x = cfg.margin + rng.randint(0, 8)
-        # Pillow's textbbox returns (l, t, r, b) anchored at the draw point.
-        l, t, r, b = draw.textbbox((x, y), text, font=font)
+        # Pillow's textbbox returns (left, top, right, bottom) anchored at
+        # the draw point.
+        bx1, by1, bx2, by2 = draw.textbbox((x, y), text, font=font)
         draw.text((x, y), text, fill=0, font=font)
-        lines.append(Line(text=text, bbox=(int(l), int(t), int(r), int(b))))
+        lines.append(Line(text=text, bbox=(int(bx1), int(by1), int(bx2), int(by2))))
         y += cfg.line_height
 
     return Sample(image=img, lines=lines, task="ocr_layout", source="synth_synthdog")

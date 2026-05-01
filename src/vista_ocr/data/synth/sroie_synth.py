@@ -179,9 +179,9 @@ def generate_sample(cfg: SroieSynthConfig | None = None) -> Sample:
         if y + cfg.line_height > cfg.canvas_h - cfg.margin:
             break
         x = cfg.margin
-        l, t, r, b = draw.textbbox((x, y), text, font=font)
+        bx1, by1, bx2, by2 = draw.textbbox((x, y), text, font=font)
         draw.text((x, y), text, fill=0, font=font)
-        lines.append(Line(text=text, bbox=(int(l), int(t), int(r), int(b))))
+        lines.append(Line(text=text, bbox=(int(bx1), int(by1), int(bx2), int(by2))))
         y += cfg.line_height
 
     if rng.random() < cfg.background_markup_prob:

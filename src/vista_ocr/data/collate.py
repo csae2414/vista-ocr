@@ -9,7 +9,6 @@ import logging
 from dataclasses import dataclass
 
 import torch
-from PIL import Image
 
 from vista_ocr.data.preprocess import (
     PreprocessConfig,
@@ -128,7 +127,7 @@ def collate(
     input_ids = torch.full((len(samples), max_t), pad_id, dtype=torch.long)
     labels = torch.full((len(samples), max_t), pad_id, dtype=torch.long)
     prompt_mask = torch.zeros_like(labels, dtype=torch.bool)
-    for i, (seq, plen) in enumerate(zip(seqs, prompt_lens)):
+    for i, (seq, plen) in enumerate(zip(seqs, prompt_lens, strict=False)):
         # Standard teacher forcing: input = seq[:-1], label = seq[1:].
         for j in range(len(seq) - 1):
             input_ids[i, j] = seq[j]

@@ -5,8 +5,6 @@ test that exercises that path runs only when an actual shard is present
 (``--pdfa-shard <path>``)."""
 from __future__ import annotations
 
-import pytest
-
 from vista_ocr.data.pdfa import _lines_for_page, _norm_bbox_to_pixels
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from vista_ocr.eval.metrics_detection import (
-    DetEvalResult,
     ap_at_iou_thresholds,
     area_f1,
     deteval,
@@ -15,7 +14,6 @@ from vista_ocr.eval.metrics_recognition import (
     compute_wer,
     word_exact_prf,
 )
-
 
 # ---------- recognition ----------
 

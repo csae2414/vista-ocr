@@ -199,7 +199,7 @@ def _ap_at_iou(gt: list[Box], pred: list[Box], scores: list[float], iou_thr: flo
     precision = cum_tp / np.maximum(cum_tp + cum_fp, 1e-9)
     ap = 0.0
     prev_r = 0.0
-    for r, p in zip(recall, precision):
+    for r, p in zip(recall, precision, strict=False):
         ap += (r - prev_r) * p
         prev_r = r
     return float(ap)

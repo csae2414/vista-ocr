@@ -13,9 +13,9 @@ single source of truth for both directions.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 import sentencepiece as spm
 

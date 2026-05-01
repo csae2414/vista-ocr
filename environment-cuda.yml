@@ -47,4 +47,12 @@ dependencies:
       - ruff==0.6.8
       - mypy==1.11.2
       - ipykernel==6.29.5
-      - flash-attn==2.6.3        # optional speedup; comment out on consumer GPUs
+      # flash-attn requires a system CUDA toolkit (not bundled with PyTorch
+      # wheels). Uncomment + install the toolkit if you have one. The
+      # MBartForCausalLM SDPA path is also gated by HF transformers issue
+      # #28005 -- see PLAN_VM.md for the full status.
+      # - flash-attn==2.6.3
+      - sphinx
+      - sphinx-rtd-theme
+      - sphinx-autodoc-typehints
+      - myst-parser

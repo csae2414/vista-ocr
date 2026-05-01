@@ -14,8 +14,6 @@ We use the in-memory :class:`InMemoryPdfaDataset` shape (a list of pre-built
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 
@@ -116,7 +114,7 @@ def test_inline_and_batch_paths_match_bitexact(tokenizer: VistaTokenizer):
     a = _train_with(tokenizer, samples, use_dataloader=False, seed=42)
     b = _train_with(tokenizer, samples, use_dataloader=True, seed=42)
     assert len(a) == len(b) == 10
-    for la, lb in zip(a, b):
+    for la, lb in zip(a, b, strict=False):
         assert abs(la - lb) < 1e-5, (la, lb)
 
 

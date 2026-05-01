@@ -20,9 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterable
 
-import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from vista_ocr.data.collate import Batch, collate

@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import torch
 from torch import nn

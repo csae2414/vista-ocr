@@ -19,14 +19,12 @@ bf16 when available, fp32 on CPU.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
 
 import torch
 from torch import nn
-
-from pathlib import Path
 
 from vista_ocr.data.collate import Batch, collate
 from vista_ocr.data.preprocess import PreprocessConfig

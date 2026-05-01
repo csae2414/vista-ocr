@@ -1,8 +1,6 @@
 """Tests for the realistic SynthDOG generator."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from vista_ocr.data.synth.synthdog_real import (

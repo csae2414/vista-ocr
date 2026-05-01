@@ -112,12 +112,12 @@ def generate_sample(paragraphs: list[str], cfg: SynthDocConfig) -> Sample:
     for para in paragraphs:
         wrapped = _wrap_words_to_lines(draw, font, para, max_width=text_width)
         for text in wrapped:
-            l, t, r, b = draw.textbbox((margin_l, y), text, font=font)
-            line_h = b - t
+            bx1, by1, bx2, by2 = draw.textbbox((margin_l, y), text, font=font)
+            line_h = by2 - by1
             if y + line_h > cfg.canvas_h - margin_t:
                 break
             draw.text((margin_l, y), text, fill=0, font=font)
-            lines.append(Line(text=text, bbox=(int(l), int(t), int(r), int(b))))
+            lines.append(Line(text=text, bbox=(int(bx1), int(by1), int(bx2), int(by2))))
             y += line_h + line_gap
         # paragraph break
         y += line_gap

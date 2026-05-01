@@ -37,7 +37,7 @@ outputs/
 # Sphinx
 docs/_build/
 
-# Claude Code workspace
+# Local IDE / agent workspace
 .claude/
 
 # Local env overrides

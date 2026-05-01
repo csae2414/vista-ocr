@@ -10,17 +10,14 @@ from itertools import cycle, islice
 
 import pytest
 import torch
-from PIL import Image
 
 from vista_ocr.data.synth.synthdog_bbox import SynthDogConfig, generate_sample
-from vista_ocr.data.types import Sample
 from vista_ocr.models.decoder import small_random_decoder
 from vista_ocr.models.encoder import FCNEncoderWidther
 from vista_ocr.models.vista_ocr import VistaOCR
 from vista_ocr.tokenizer.build_spm import train_spm
 from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
 from vista_ocr.tokenizer.tokenizer import (
-    Line,
     VistaTokenizer,
     list_special_and_spatial_tokens,
 )
@@ -29,7 +26,7 @@ from vista_ocr.training.train_loop import TrainConfig, train
 
 
 def test_linear_warmup_cosine_shape():
-    cfg = dict(warmup_steps=10, total_steps=100, base_lr=1e-3)
+    cfg = {"warmup_steps": 10, "total_steps": 100, "base_lr": 1e-3}
     assert linear_warmup_cosine(0, **cfg) < 1e-3
     assert linear_warmup_cosine(9, **cfg) <= 1e-3
     assert linear_warmup_cosine(10, **cfg) == pytest.approx(1e-3)

@@ -47,7 +47,7 @@ def word_exact_prf(refs: list[str], hyps: list[str]) -> tuple[float, float, floa
     TP / FP / FN across the whole eval set, then return micro P, R, F1.
     """
     tp = fp = fn = 0
-    for ref, hyp in zip(refs, hyps):
+    for ref, hyp in zip(refs, hyps, strict=False):
         ref_c = Counter(ref.split())
         hyp_c = Counter(hyp.split())
         for w, n in hyp_c.items():

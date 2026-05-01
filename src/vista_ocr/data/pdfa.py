@@ -18,7 +18,6 @@ Multi-page PDFs are flattened: each page becomes its own ``Sample``.
 """
 from __future__ import annotations
 
-import io
 import json
 import logging
 from collections.abc import Iterator
@@ -90,7 +89,7 @@ def _lines_for_page(page: dict, img_w: int, img_h: int, min_score: float) -> lis
     scores = block.get("score") or [1.0] * len(texts)
 
     out: list[Line] = []
-    for text, bbox, score in zip(texts, bboxes, scores):
+    for text, bbox, score in zip(texts, bboxes, scores, strict=False):
         if not text or score < min_score:
             continue
         px = _norm_bbox_to_pixels(bbox, img_w, img_h)
@@ -113,7 +112,7 @@ def _samples_from_record(
         rendered = rendered[:n]
         pages = pages[:n]
 
-    for img, page in zip(rendered, pages):
+    for img, page in zip(rendered, pages, strict=False):
         w, h = img.size
         lines = _lines_for_page(page, w, h, cfg.min_line_score)
         if cfg.drop_non_latin:

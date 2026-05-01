@@ -34,7 +34,7 @@ def small_random_decoder(
     ffn_dim: int = 128,
     max_position_embeddings: int = 256,
     attn_implementation: str = "eager",
-) -> "MBartDecoder":
+) -> MBartDecoder:
     """Build a tiny randomly-initialised :class:`MBartDecoder` for tests.
     Skips the ~610 MB pretrained download."""
     cfg = MBartConfig(
@@ -87,7 +87,7 @@ class MBartDecoder(nn.Module):
         *,
         d_model: int,
         vocab_size: int,
-    ) -> "MBartDecoder":
+    ) -> MBartDecoder:
         return cls(model=model, d_model=d_model, vocab_size=vocab_size)
 
     @classmethod
@@ -98,7 +98,7 @@ class MBartDecoder(nn.Module):
         max_position_embeddings: int = 4096,
         load_pretrained_body: bool = True,
         attn_implementation: str = "eager",
-    ) -> "MBartDecoder":
+    ) -> MBartDecoder:
         """Build the paper's decoder: 12-layer mBART-50 decoder with vocab
         resized to our EN-only vocab. If ``load_pretrained_body`` is True
         the transformer body weights are copied from

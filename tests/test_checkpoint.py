@@ -8,8 +8,6 @@ import torch
 from torch import nn
 
 from vista_ocr.training.callbacks import (
-    CheckpointConfig,
-    ValConfig,
     find_latest_checkpoint,
     load_checkpoint,
     prune_old_checkpoints,
@@ -48,7 +46,7 @@ def test_save_and_load_round_trip(tmp_path: Path, model_and_optim):
     assert payload.step == 5
     assert payload.best_val_loss == pytest.approx(0.42)
     assert payload.extra == {"note": "hi"}
-    for a, b in zip(m.parameters(), m2.parameters()):
+    for a, b in zip(m.parameters(), m2.parameters(), strict=False):
         assert torch.allclose(a, b)
 
 

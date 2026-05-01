@@ -26,7 +26,7 @@ class VistaOCR(nn.Module):
 
     def __init__(self, encoder: FCNEncoderWidther, decoder: MBartDecoder) -> None:
         super().__init__()
-        if encoder.OUT_CHANNELS != decoder.d_model:
+        if decoder.d_model != encoder.OUT_CHANNELS:
             raise ValueError(
                 f"Encoder out_channels ({encoder.OUT_CHANNELS}) must equal "
                 f"decoder d_model ({decoder.d_model}) for direct cross-attention"

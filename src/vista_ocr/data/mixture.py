@@ -23,7 +23,7 @@ class TaskMix:
 
     def sample_task(self, rng: random.Random) -> TaskName:
         items = list(self.weights.items())
-        names, ws = zip(*items)
+        names, ws = zip(*items, strict=False)
         return rng.choices(names, weights=ws, k=1)[0]
 
 

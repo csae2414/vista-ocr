@@ -7,8 +7,8 @@ import torch
 from vista_ocr.models.encoder import (
     ConvBlock,
     DSCBlock,
-    FCNEncoderWidther,
     Factorized2DPositionalEmbedding,
+    FCNEncoderWidther,
     _MixDropout,
 )
 

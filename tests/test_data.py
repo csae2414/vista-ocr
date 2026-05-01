@@ -2,22 +2,20 @@
 synthetic generators."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-import torch
 
 from vista_ocr.data.collate import build_target_ids, collate
 from vista_ocr.data.mixture import MixedTaskStream, TaskMix
 from vista_ocr.data.preprocess import (
     PreprocessConfig,
-    is_blank_image,
     is_latin_text,
     pad_to_multiple,
     resize_to_canvas,
 )
-from vista_ocr.data.synth.sroie_synth import SroieSynthConfig, generate_sample as gen_sroie
-from vista_ocr.data.synth.synthdog_bbox import SynthDogConfig, generate_sample as gen_synthdog
+from vista_ocr.data.synth.sroie_synth import SroieSynthConfig
+from vista_ocr.data.synth.sroie_synth import generate_sample as gen_sroie
+from vista_ocr.data.synth.synthdog_bbox import SynthDogConfig
+from vista_ocr.data.synth.synthdog_bbox import generate_sample as gen_synthdog
 from vista_ocr.data.types import Sample
 from vista_ocr.tokenizer.build_spm import train_spm
 from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
@@ -26,7 +24,6 @@ from vista_ocr.tokenizer.tokenizer import (
     VistaTokenizer,
     list_special_and_spatial_tokens,
 )
-
 
 # ---------- shared tokenizer fixture ----------
 
