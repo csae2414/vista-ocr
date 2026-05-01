@@ -1,0 +1,28 @@
+# Stage 3 — multitask: OCR / OCR+layout / Region-OCR / find_it
+defaults:
+  - base
+
+stage: pretrain_stage3
+data:
+  sources:
+    - pdfa_eng_wds
+    - idl_wds
+    - synth_synthdog_en
+    - synth_sroie
+    - synth_iam
+  task_mix:
+    ocr: 0.25
+    ocr_layout: 0.25
+    region_ocr: 0.25
+    find_it: 0.25
+  find_it_query_lengths:
+    - [2, 5]
+    - [5, 8]
+    - [8, 11]
+optim:
+  lr: 3.0e-5
+  schedule:
+    warmup_steps: 5000
+    total_steps: 70000
+train:
+  freeze_decoder: false

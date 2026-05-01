@@ -1,0 +1,20 @@
+# Stage 2 — text + interleaved layout (boxes) on real + synthetic.
+defaults:
+  - base
+
+stage: pretrain_stage2
+data:
+  sources:
+    - pdfa_eng_wds
+    - idl_wds
+    - synth_synthdog_en
+    - synth_sroie
+  task_mix:
+    ocr_layout: 1.0
+optim:
+  lr: 5.0e-5
+  schedule:
+    warmup_steps: 5000
+    total_steps: 80000
+train:
+  freeze_decoder: false

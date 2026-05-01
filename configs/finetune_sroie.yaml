@@ -1,0 +1,18 @@
+# Finetune VISTA_omni on SROIE 2019 (target F1 = 93.95).
+defaults:
+  - base
+
+stage: finetune_sroie
+data:
+  sources: [sroie_train]
+  task_mix:
+    ocr_layout: 1.0
+optim:
+  lr: 1.0e-5
+  schedule:
+    warmup_steps: 500
+    total_steps: 5000
+train:
+  effective_batch_size: 2                   # paper: bs=2 for SROIE
+  micro_batch_size: 2
+  grad_accum_steps: 1

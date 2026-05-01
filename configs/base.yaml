@@ -1,0 +1,116 @@
+# VISTA-OCR base config. All other configs override fields from here.
+# Defaults reflect the paper where stated, and PLAN.md §12.6 where not.
+
+model:
+  encoder:
+    name: fcn_widther                       # DANIEL FCN_Encoder_Widther
+    input_channels: 1                       # grayscale
+    out_channels: 1024
+    stride_total: [32, 8]                   # (H, W)
+    dropout: 0.5
+    dropout_schedule:
+      type: exponential
+      T: 50000
+    pe:
+      type: factorized_2d_learned
+      h_max: 500                            # max feature-map H
+      w_max: 1000                           # max feature-map W
+      d_model: 1024
+
+  decoder:
+    name: mbart                             # paper-literal: "mBART-based decoder"
+    init_from: facebook/mbart-large-50      # only the decoder weights are kept
+    layers: 12
+    d_model: 1024
+    n_heads: 16
+    ffn_dim: 4096
+    dropout: 0.1
+    label_smoothing: 0.0
+    max_position_embeddings: 4096           # extends mBART's default 1024
+    tie_word_embeddings: true
+
+tokenizer:
+  type: sentencepiece                       # trained on EN corpus
+  vocab_size: 16000
+  model_path: data/processed/vocab/sp_en_16k.model
+  special_tokens:
+    - <s>
+    - </s>
+    - <pad>
+    - <unk>
+    - <task=ocr>
+    - <task=ocr_layout>
+    - <task=region_ocr>
+    - <task=find_it>
+    - </text>
+    - </location>
+    - <find_it>
+  spatial:
+    page_canvas_h: 3508
+    page_canvas_w: 2480
+    quantizer_px: 10                        # 248 x-tokens, 351 y-tokens
+    scheme: original                        # "original" | "segmented" | "unified"
+
+prompts:
+  region_ocr:                               # paper-literal: "Read at x1,y1,x2,y2"
+    template: "Read at {x1},{y1},{x2},{y2}"
+  find_it:                                  # paper-literal: "<find_it> {text}"
+    template: "<find_it> {text}"
+
+reading_order:
+  mode: top_left_to_bottom_right            # paper VISTA_omni default
+
+input:
+  dpi: 200
+  max_size: [3508, 2480]                    # H, W; oversize -> resized
+  rectify: true                             # paper: "non-straight images are rectified"
+  pad_multiple_of: 32
+
+filtering:                                  # appendix 0.A.1
+  drop_non_latin: true
+  drop_empty_text: true
+  drop_flipped: true
+  drop_oversize: true
+
+loss:
+  lambda_text: 0.5                          # PLAN §12.6 default
+  ignore_prompt_tokens: true
+  ignore_pad: true
+
+optim:
+  name: adamw
+  lr: 5.0e-5
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  schedule:
+    type: linear_warmup_cosine
+    warmup_steps: 5000
+    total_steps: 200000
+    min_lr_ratio: 0.0
+
+train:
+  precision: bf16                           # on GPU; cpu loop runs fp32
+  effective_batch_size: 1111                # paper
+  micro_batch_size: 4
+  grad_accum_steps: auto                    # filled by training script
+  num_workers: 8
+  log_every: 50
+  eval_every: 5000
+  ckpt_every: 5000
+  resume: null
+
+eval:
+  detection:
+    deteval:                                # Wolf & Jolion 2006 (paper ref [37])
+      tr: 0.8
+      tp: 0.4
+      box_expand_px: 0
+    iou_thresholds: [0.5, 0.6, 0.7, 0.8]
+  recognition:
+    metrics: [cer, wer, word_f1]
+  decode:
+    strategy: greedy
+    max_new_tokens: 4096
+    num_beams: 1

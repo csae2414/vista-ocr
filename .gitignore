@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data and artifacts
+data/raw/
+data/interim/
+data/processed/
+data/synth/
+checkpoints/
+logs/
+wandb/
+outputs/
+*.ckpt
+*.safetensors
+*.bin
+*.pt
+
+# IDEs / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Notebooks scratch
+*.ipynb_checkpoints/
+
+# Sphinx
+docs/_build/
+
+# Claude Code workspace
+.claude/
+
+# Local env overrides
+.env
+.envrc
+*.local.yaml

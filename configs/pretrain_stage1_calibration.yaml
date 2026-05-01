@@ -1,0 +1,20 @@
+# Stage 1 — encoder/decoder calibration on text recognition only.
+# Sub-stage 1a: decoder frozen. Sub-stage 1b: full model.
+defaults:
+  - base
+
+stage: pretrain_stage1
+data:
+  sources:
+    - pdfa_eng_wds
+    - idl_wds
+  task_mix:
+    ocr: 1.0                                # text-only output, no boxes
+optim:
+  lr: 3.0e-4                                # higher when decoder is frozen
+  schedule:
+    warmup_steps: 2000
+    total_steps: 20000
+train:
+  freeze_decoder: true                      # stage 1a; switch off for 1b
+  effective_batch_size: 1111

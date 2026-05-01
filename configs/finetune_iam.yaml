@@ -1,0 +1,18 @@
+# Finetune VISTA_omni on IAM (target WER = 10.14).
+defaults:
+  - base
+
+stage: finetune_iam
+data:
+  sources: [iam_train]
+  task_mix:
+    ocr_layout: 1.0
+optim:
+  lr: 1.0e-5
+  schedule:
+    warmup_steps: 500
+    total_steps: 10000
+train:
+  effective_batch_size: 6                   # paper: bs=6 for IAM
+  micro_batch_size: 6
+  grad_accum_steps: 1
