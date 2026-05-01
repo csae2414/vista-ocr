@@ -1,6 +1,8 @@
-"""Batch collation: builds decoder input/label tensors from a list of
-:class:`Sample`s. Handles task-conditional prompt prepending and pads to
-the longest sequence in the batch."""
+"""Batch collation.
+
+Builds decoder input/label tensors from a list of
+:class:`vista_ocr.data.types.Sample` objects. Handles task-conditional
+prompt prepending and pads to the longest sequence in the batch."""
 from __future__ import annotations
 
 import logging

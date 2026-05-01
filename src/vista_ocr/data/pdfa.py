@@ -144,9 +144,10 @@ def _decode_pdfa_record(record: dict, cfg: PdfaConfig) -> Iterator[Sample]:
 
 
 def iter_pdfa(cfg: PdfaConfig) -> Iterator[Sample]:
-    """Stream :class:`Sample`s from the configured PDFA shards.
+    """Stream :class:`vista_ocr.data.types.Sample` from the configured PDFA shards.
 
-    ``webdataset`` is imported lazily so unit tests don't need it."""
+    ``webdataset`` is imported lazily so unit tests don't need it.
+    """
     import webdataset as wds  # noqa: PLC0415
 
     # empty_check=False so a per-worker shard slice that happens to be

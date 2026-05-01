@@ -18,9 +18,11 @@ LOG = logging.getLogger(__name__)
 
 
 class VistaOCR(nn.Module):
-    """Combined encoder + decoder. Both halves are plain ``nn.Module``s so
-    the training loop can apply gradient checkpointing or freeze either
-    side independently."""
+    """Combined encoder + decoder.
+
+    Both halves are plain ``nn.Module`` instances so the training loop
+    can apply gradient checkpointing or freeze either side independently.
+    """
 
     def __init__(self, encoder: FCNEncoderWidther, decoder: MBartDecoder) -> None:
         super().__init__()

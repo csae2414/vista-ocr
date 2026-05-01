@@ -1,20 +1,22 @@
 """Train a SentencePiece BPE tokenizer for VISTA-OCR.
 
 The paper says only that they "decreased the vocabulary size" from mBART's
-default; concrete number not given. We default to 16k subwords (PLAN.md
-§12.6). Special and spatial tokens are registered as user_defined_symbols
-so SentencePiece never splits them.
+default; concrete number not given. We default to 16k subwords
+(PLAN.md, section 12.6). Special and spatial tokens are registered as
+``user_defined_symbols`` so SentencePiece never splits them.
 
-Usage:
+Example::
+
     from vista_ocr.tokenizer.build_spm import train_spm
+
     train_spm(
         corpus_path="data/processed/corpora/en_pretrain.txt",
         out_prefix="data/processed/vocab/sp_en_16k",
         vocab_size=16000,
-        user_symbols=[...],  # build via vista_ocr.tokenizer.tokenizer.list_special_and_spatial_tokens
+        user_symbols=[...],  # vista_ocr.tokenizer.tokenizer.list_special_and_spatial_tokens
     )
 
-The script does not bootstrap a corpus. See `scripts/bootstrap_tokenizer.py`
+The script does not bootstrap a corpus. See ``scripts/bootstrap_tokenizer.py``
 for the small generic English corpus we use until PDFA/IDL are downloaded.
 """
 from __future__ import annotations

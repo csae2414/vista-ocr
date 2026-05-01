@@ -148,9 +148,8 @@ def run_validation(
 ) -> dict:
     """Compute mean loss over the first ``max_batches`` of ``val_batches``.
 
-    Notes:
-    - ``loss_fn`` takes ``(model, batch)`` and returns a scalar tensor.
-    - We keep gradient checkpointing **on** during validation. Under
+    * ``loss_fn`` takes ``(model, batch)`` and returns a scalar tensor.
+    * Gradient checkpointing stays **on** during validation. Under
       ``torch.no_grad()`` the recomputation overhead is irrelevant and
       the materialised-activation peak memory would otherwise be ~3x
       higher than training.
