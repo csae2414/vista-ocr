@@ -1,8 +1,4 @@
-"""Learning-rate schedules.
-
-The paper says only "learning rate scheduler" without specifying. We
-default to linear-warmup + cosine-decay as documented in PLAN §12.6.
-"""
+"""Learning-rate and dropout schedules."""
 from __future__ import annotations
 
 import math

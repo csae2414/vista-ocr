@@ -41,7 +41,7 @@ from vista_ocr.training.callbacks import (
     save_checkpoint,
 )
 from vista_ocr.training.losses import combined_loss
-from vista_ocr.training.schedules import linear_warmup_cosine
+from vista_ocr.training.schedules import exponential_dropout, linear_warmup_cosine
 
 LOG = logging.getLogger(__name__)
 
@@ -77,7 +77,22 @@ class TrainConfig:
     val: ValConfig | None = None
     val_batches_factory: object | None = None     # callable -> Iterable[Batch]
     val_loss_fn: object | None = None             # callable(model, batch) -> Tensor
+    val_decode_fn: object | None = None           # callable(model, batch) -> (refs, hyps)
+    val_decode_n: int = 0                         # >0 enables CER/WER on first N batches
     resume_from: Path | None = None               # explicit path to a ckpt_*.pt
+    # A4: cosine schedule floor. 0.0 = decay to zero (old behaviour);
+    # 0.05 keeps a tiny LR through the tail. Documented as fresh-runs-only
+    # in notes; mid-run change is not safe with checkpointed optimiser
+    # state.
+    min_lr_ratio: float = 0.0
+    # B1: DANIEL exponential dropout schedule for the encoder.
+    # Set encoder_dropout_max to None to disable (default off so no
+    # behaviour change for existing tests). When enabled, per step:
+    #   p(step) = encoder_dropout_max * (1 - exp(-step / dropout_T))
+    # Stage-1 (frozen decoder, encoder-only) should leave this disabled
+    # and use a fixed dropout to avoid early overfit.
+    encoder_dropout_max: float | None = None
+    dropout_T: float = 5e4
 
 
 @dataclass
@@ -222,6 +237,18 @@ def train(
     for batch in micro_iter:
         if max_steps is not None and step >= max_steps:
             break
+
+        # B1: DANIEL exponential dropout schedule for the encoder.
+        # Per step we update the encoder's MixDropout p in place. No-op
+        # when encoder_dropout_max is None.
+        if cfg.encoder_dropout_max is not None and hasattr(
+            model.encoder, "set_dropout"
+        ):
+            p = cfg.encoder_dropout_max * exponential_dropout(
+                step, T=cfg.dropout_T
+            )
+            model.encoder.set_dropout(p)
+
         batch_device = Batch(
             images=batch.images.to(device),
             decoder_input_ids=batch.decoder_input_ids.to(device),
@@ -265,6 +292,7 @@ def train(
             warmup_steps=cfg.warmup_steps,
             total_steps=cfg.total_steps,
             base_lr=cfg.base_lr,
+            min_lr_ratio=cfg.min_lr_ratio,
         )
         for g in optimizer.param_groups:
             g["lr"] = lr
@@ -311,13 +339,25 @@ def train(
                 torch.cuda.empty_cache()
             val_batches = cfg.val_batches_factory()
             val_stats = run_validation(
-                model, val_batches, cfg.val_loss_fn, max_batches=cfg.val.max_batches,
+                model, val_batches, cfg.val_loss_fn,
+                max_batches=cfg.val.max_batches,
+                decode_fn=cfg.val_decode_fn,
+                decode_n=cfg.val_decode_n,
             )
             if device.type == "cuda":
                 torch.cuda.empty_cache()
-            LOG.info("validation step=%d val_loss=%.4f n=%d (%.1fs)",
+            extras = ""
+            if "val_cer" in val_stats:
+                extras = (
+                    f" cer={val_stats['val_cer']:.4f}"
+                    f" wer={val_stats['val_wer']:.4f}"
+                    f" word-f1={val_stats['val_word_f1']:.4f}"
+                    f" decoded={val_stats['val_decoded_n']}"
+                    f" empty={val_stats['val_decoded_n_empty']}"
+                )
+            LOG.info("validation step=%d val_loss=%.4f n=%d (%.1fs)%s",
                      step, val_stats["val_loss"], val_stats["n_batches"],
-                     val_stats["elapsed_s"])
+                     val_stats["elapsed_s"], extras)
             if cfg.checkpoint and cfg.checkpoint.save_best and \
                     val_stats["val_loss"] < best_val_loss:
                 best_val_loss = val_stats["val_loss"]

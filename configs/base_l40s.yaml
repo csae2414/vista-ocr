@@ -1,0 +1,55 @@
+# L40S overrides on top of base.yaml.
+#
+# Profile: 48 GB VRAM, ~2x bandwidth of an RTX 3090. We can afford to
+# disable encoder gradient checkpointing and double the micro batch.
+# Keep the larger page resolution closer to paper (2480 x 3508 still
+# overshoots; 1700 x 2200 is roughly half).
+#
+# IMPORTANT: this config is a target, not a guarantee. Run a 100-step
+# OOM-smoke before committing to a long run:
+#
+#   python -c "
+#   import torch
+#   from vista_ocr.models.encoder import FCNEncoderWidther
+#   from vista_ocr.models.decoder import small_random_decoder
+#   from vista_ocr.models.vista_ocr import VistaOCR
+#   enc = FCNEncoderWidther(input_channels=1, dropout=0.0,
+#                           gradient_checkpointing=False)
+#   dec = small_random_decoder(vocab_size=16000, d_model=1024,
+#                              n_layers=4, n_heads=16, ffn_dim=4096,
+#                              max_position_embeddings=4096)
+#   m = VistaOCR(enc, dec).cuda().train()
+#   for _ in range(20):
+#       imgs = torch.randn(2, 1, 1700, 2200, device='cuda')
+#       ids  = torch.randint(0, 16000, (2, 512), device='cuda')
+#       m(imgs, ids).sum().backward()
+#       m.zero_grad()
+#   print('peak GB:', torch.cuda.max_memory_allocated()/1e9)
+#   "
+#
+# If peak GB > 44, drop micro_batch_size to 1 or re-enable gradient
+# checkpointing.
+
+defaults:
+  - base
+
+model:
+  encoder:
+    dropout: 0.5
+  decoder:
+    layers: 4
+
+input:
+  max_size: [2200, 1700]
+  pad_multiple: 32
+
+train:
+  precision: bf16
+  effective_batch_size: 1111
+  micro_batch_size: 2
+  num_workers: 8
+  log_every: 50
+  eval_every: 2000
+  ckpt_every: 2000
+  gradient_checkpointing: false
+  compile_model: false

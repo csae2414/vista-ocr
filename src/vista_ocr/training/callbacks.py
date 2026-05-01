@@ -151,10 +151,16 @@ def run_validation(
     loss_fn: Callable[[nn.Module, object], torch.Tensor],
     *,
     max_batches: int = 50,
+    decode_fn: Callable[[nn.Module, object], tuple[list[str], list[str]]] | None = None,
+    decode_n: int = 0,
 ) -> dict:
     """Compute mean loss over the first ``max_batches`` of ``val_batches``.
 
     * ``loss_fn`` takes ``(model, batch)`` and returns a scalar tensor.
+    * ``decode_fn``, when given, runs on the first ``decode_n`` batches
+      and must return ``(refs, hyps)`` text lists. The CER/WER over
+      those refs/hyps are added to the returned dict (``val_cer``,
+      ``val_wer``, ``val_word_f1``, ``val_decoded_n_empty``).
     * Gradient checkpointing stays **on** during validation. Under
       ``torch.no_grad()`` the recomputation overhead is irrelevant and
       the materialised-activation peak memory would otherwise be ~3x
@@ -165,6 +171,8 @@ def run_validation(
     losses: list[float] = []
     t0 = time.perf_counter()
     skipped = 0
+    refs_for_decode: list[str] = []
+    hyps_for_decode: list[str] = []
     # Force-disable autocast for the entire val pass. Issue #132613 in
     # PyTorch + cuBLAS internal allocation contention have been observed
     # to surface as CUBLAS_STATUS_EXECUTION_FAILED in eval mode + bf16
@@ -184,14 +192,48 @@ def run_validation(
                 LOG.warning("val batch %d skipped: %s", i, exc)
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                continue
+            if decode_fn is not None and i < decode_n:
+                try:
+                    refs, hyps = decode_fn(model, batch)
+                    refs_for_decode.extend(refs)
+                    hyps_for_decode.extend(hyps)
+                except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+                    LOG.warning("val decode %d skipped: %s", i, exc)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
     if was_training:
         model.train()
+
+    decode_metrics: dict = {}
+    if refs_for_decode:
+        # Imported lazily so the loss-only path doesn't pay for jiwer.
+        from vista_ocr.eval.metrics_recognition import recognition_metrics
+
+        rec = recognition_metrics(refs_for_decode, hyps_for_decode)
+        n_empty = sum(1 for h in hyps_for_decode if not h.strip())
+        decode_metrics = {
+            "val_cer": rec.cer,
+            "val_wer": rec.wer,
+            "val_word_f1": rec.f1,
+            "val_decoded_n": len(hyps_for_decode),
+            "val_decoded_n_empty": n_empty,
+        }
+        if n_empty > len(hyps_for_decode) // 2:
+            LOG.warning(
+                "val: %d/%d decoded outputs are empty -- decoder may be "
+                "stuck (pad==eos regression?)", n_empty, len(hyps_for_decode),
+            )
+
     if not losses:
-        return {"val_loss": float("nan"), "n_batches": 0, "elapsed_s": 0.0,
-                "skipped": skipped}
-    return {
-        "val_loss": sum(losses) / len(losses),
-        "n_batches": len(losses),
-        "elapsed_s": time.perf_counter() - t0,
-        "skipped": skipped,
-    }
+        out = {"val_loss": float("nan"), "n_batches": 0, "elapsed_s": 0.0,
+               "skipped": skipped}
+    else:
+        out = {
+            "val_loss": sum(losses) / len(losses),
+            "n_batches": len(losses),
+            "elapsed_s": time.perf_counter() - t0,
+            "skipped": skipped,
+        }
+    out.update(decode_metrics)
+    return out

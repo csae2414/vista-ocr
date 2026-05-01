@@ -34,6 +34,17 @@ def test_linear_warmup_cosine_shape():
     assert linear_warmup_cosine(200, **cfg) == 0.0
 
 
+def test_linear_warmup_cosine_min_lr_ratio_floor():
+    """A4: with min_lr_ratio=0.05 the schedule must floor at 5% of base."""
+    cfg = {"warmup_steps": 10, "total_steps": 100, "base_lr": 1e-3,
+           "min_lr_ratio": 0.05}
+    # at total_steps and beyond
+    assert linear_warmup_cosine(100, **cfg) == pytest.approx(5e-5)
+    assert linear_warmup_cosine(500, **cfg) == pytest.approx(5e-5)
+    # mid-decay strictly above the floor
+    assert linear_warmup_cosine(50, **cfg) > 5e-5
+
+
 def test_exponential_dropout_grows_to_one():
     assert exponential_dropout(0) == pytest.approx(0.0)
     assert exponential_dropout(int(1e6)) > 0.999
@@ -121,6 +132,112 @@ def test_overfit_single_sample_loss_decreases(
     first_loss = sum(h.loss for h in history[:3]) / 3
     last_loss = sum(h.loss for h in history[-3:]) / 3
     assert last_loss < first_loss * 0.6, (first_loss, last_loss)
+
+
+def test_dropout_schedule_off_by_default(tiny_model: VistaOCR, tokenizer: VistaTokenizer):
+    """B1: encoder_dropout_max=None must NOT mutate encoder dropout."""
+    from vista_ocr.models.encoder import _MixDropout
+    # baseline dropout values across all MixDropout modules
+    pre = [m.dropout.p for m in tiny_model.encoder.modules() if isinstance(m, _MixDropout)]
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64))
+    sample.task = "ocr"
+    cfg = TrainConfig(
+        base_lr=1e-4, warmup_steps=1, total_steps=4,
+        target_h=128, target_w=128, pad_multiple=32,
+        lambda_text=1.0,
+        encoder_dropout_max=None,             # disabled
+    )
+    train(tiny_model, [sample], tokenizer, cfg, max_steps=1)
+    post = [m.dropout.p for m in tiny_model.encoder.modules() if isinstance(m, _MixDropout)]
+    assert pre == post
+
+
+def test_dropout_schedule_rises_when_enabled(tiny_model: VistaOCR, tokenizer: VistaTokenizer):
+    """B1: with encoder_dropout_max=0.5 and dropout_T=2, p should grow
+    quickly across a handful of steps (1 - exp(-step/2))."""
+    from vista_ocr.models.encoder import _MixDropout
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64))
+    sample.task = "ocr"
+    cfg = TrainConfig(
+        base_lr=1e-4, warmup_steps=1, total_steps=10,
+        target_h=128, target_w=128, pad_multiple=32,
+        lambda_text=1.0,
+        encoder_dropout_max=0.5, dropout_T=2.0,
+    )
+    train(tiny_model, list(__import__("itertools").repeat(sample, 5)),
+          tokenizer, cfg, max_steps=5)
+    final = next(m.dropout.p for m in tiny_model.encoder.modules()
+                 if isinstance(m, _MixDropout))
+    # at step 5 with T=2, p = 0.5 * (1 - exp(-5/2)) ≈ 0.459
+    assert 0.35 < final < 0.55, final
+
+
+def test_run_validation_decode_n_zero_skips_decode():
+    """B3: decode_n=0 keeps the no-decode path bit-exact."""
+    import torch
+    from torch import nn
+
+    from vista_ocr.training.callbacks import run_validation
+    m = nn.Linear(2, 1)
+
+    def loss_fn(model, batch):
+        return torch.tensor(0.5)
+
+    out = run_validation(m, iter([0, 1, 2]), loss_fn, max_batches=2, decode_n=0)
+    assert "val_cer" not in out
+    assert out["n_batches"] == 2
+
+
+def test_run_validation_decode_n_emits_metrics():
+    """B3: with decode_n>0 we get cer/wer/word-f1 in the result."""
+    import torch
+    from torch import nn
+
+    from vista_ocr.training.callbacks import run_validation
+    m = nn.Linear(2, 1)
+    refs_batches = [(0, "hello world"), (1, "foo bar")]
+
+    def loss_fn(model, batch):
+        return torch.tensor(0.1)
+
+    def decode_fn(model, batch):
+        idx, gt = batch
+        return [gt], [gt]   # perfect predictions
+
+    out = run_validation(
+        m, iter(refs_batches), loss_fn, max_batches=2,
+        decode_fn=decode_fn, decode_n=2,
+    )
+    assert out["val_cer"] == pytest.approx(0.0)
+    assert out["val_wer"] == pytest.approx(0.0)
+    assert out["val_word_f1"] == pytest.approx(1.0)
+    assert out["val_decoded_n"] == 2
+    assert out["val_decoded_n_empty"] == 0
+
+
+def test_run_validation_warns_on_majority_empty(caplog):
+    """B3: empty-output sanity check fires when most decodes are empty."""
+    import logging as _logging
+
+    import torch
+    from torch import nn
+
+    from vista_ocr.training.callbacks import run_validation
+    m = nn.Linear(2, 1)
+
+    def loss_fn(model, batch):
+        return torch.tensor(0.1)
+
+    def decode_fn(model, batch):
+        return ["target"], [""]   # always empty prediction
+
+    with caplog.at_level(_logging.WARNING, logger="vista_ocr.training.callbacks"):
+        out = run_validation(
+            m, iter(range(3)), loss_fn, max_batches=3,
+            decode_fn=decode_fn, decode_n=3,
+        )
+    assert out["val_decoded_n_empty"] == 3
+    assert any("empty" in rec.message for rec in caplog.records)
 
 
 def test_optimizer_excludes_frozen_params(tiny_model: VistaOCR):
