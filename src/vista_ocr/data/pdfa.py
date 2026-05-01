@@ -43,6 +43,12 @@ class PdfaConfig:
     dpi: int = PAPER_DPI
     min_line_score: float = 0.5
     flatten_multi_page: bool = True
+    # B4: outlier-page filters. None = disabled (default). When set,
+    # drop pages that exceed the threshold. Measure the empirical
+    # distribution on a real shard before setting these (see
+    # scripts/measure_pdfa_distribution.py).
+    drop_above_lines: int | None = None
+    drop_above_words: int | None = None
 
 
 def _norm_bbox_to_pixels(
@@ -119,6 +125,13 @@ def _samples_from_record(
             lines = [ln for ln in lines if is_latin_text(ln.text)]
         if not lines:
             continue
+        # B4: outlier-page filters (line / word counts).
+        if cfg.drop_above_lines is not None and len(lines) > cfg.drop_above_lines:
+            continue
+        if cfg.drop_above_words is not None:
+            n_words = sum(len(ln.text.split()) for ln in lines)
+            if n_words > cfg.drop_above_words:
+                continue
         if len(lines) > cfg.max_lines_per_page:
             lines = lines[: cfg.max_lines_per_page]
         if cfg.drop_blank and is_blank_image(img):

@@ -43,3 +43,11 @@ def test_lines_for_page_filters_low_score():
 def test_lines_for_page_handles_missing_block():
     assert _lines_for_page({}, 100, 100, 0.5) == []
     assert _lines_for_page({"lines": {}}, 100, 100, 0.5) == []
+
+
+def test_pdfa_config_default_outlier_filters_disabled():
+    """B4: drop_above_lines / drop_above_words default to None."""
+    from vista_ocr.data.pdfa import PdfaConfig
+    cfg = PdfaConfig(shards=["x"])
+    assert cfg.drop_above_lines is None
+    assert cfg.drop_above_words is None

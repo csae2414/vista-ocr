@@ -75,6 +75,13 @@ def main() -> None:
                     help="B3: decode + score CER/WER on first N val batches.")
     ap.add_argument("--augment", action="store_true",
                     help="B2: enable train-time bbox-aware augmentation.")
+    # A3: stage-3 multitask weights. Paper Section 3.3 reads as equal-
+    # weight progressive introduction; the defaults reflect that. An
+    # operator can pass non-uniform weights to A/B-test rebalancing.
+    ap.add_argument("--w-ocr", type=float, default=0.25)
+    ap.add_argument("--w-ocr-layout", type=float, default=0.25)
+    ap.add_argument("--w-region-ocr", type=float, default=0.25)
+    ap.add_argument("--w-find-it", type=float, default=0.25)
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -103,10 +110,19 @@ def main() -> None:
     if aug_cfg is not None:
         LOG.info("B2: train-time augmentation enabled")
 
-    # Stage-3 task mix (paper Section 3.3): equal weights on the four tasks.
-    mix = TaskMix(weights={
-        "ocr": 0.25, "ocr_layout": 0.25, "region_ocr": 0.25, "find_it": 0.25,
-    })
+    # Stage-3 task mix. Defaults to paper Section 3.3 equal weights.
+    weights = {
+        "ocr": args.w_ocr,
+        "ocr_layout": args.w_ocr_layout,
+        "region_ocr": args.w_region_ocr,
+        "find_it": args.w_find_it,
+    }
+    s = sum(weights.values())
+    if s <= 0:
+        raise ValueError(f"All task weights are zero: {weights}")
+    weights = {k: v / s for k, v in weights.items()}
+    LOG.info("Stage-3 task mix: %s", {k: round(v, 3) for k, v in weights.items()})
+    mix = TaskMix(weights=weights)
 
     # Multitask relabelling needs the raw Sample, so we stream in-process.
     def stage3_stream():
