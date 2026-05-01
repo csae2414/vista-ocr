@@ -40,6 +40,7 @@ dependencies:
       # Synthetic data
       - faker==28.4.1
       - albumentations==1.4.15
+      - albucore==0.0.16
 
       # Eval metrics
       - jiwer==3.0.4

@@ -37,6 +37,7 @@ dependencies:
       - pdf2image==1.17.0
       - faker==28.4.1
       - albumentations==1.4.15
+      - albucore==0.0.16
       - jiwer==3.0.4
       - editdistance==0.8.1
       - omegaconf==2.3.0

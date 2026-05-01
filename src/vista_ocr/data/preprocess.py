@@ -48,6 +48,10 @@ class PreprocessConfig:
     target_w: int = 2480
     pad_multiple: int = 32
     rectify: bool = False
+    # B2 train-time augmentation. None = disabled (val and inference path
+    # always pass None). Constructed lazily by collate() to avoid paying
+    # the import cost when augmentation is off.
+    augment: object | None = None  # AugmentConfig | None
 
 
 def resize_to_canvas(

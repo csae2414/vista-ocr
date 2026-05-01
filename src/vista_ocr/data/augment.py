@@ -1,0 +1,133 @@
+"""Bbox-aware training augmentation pipeline.
+
+Conservative ranges and bbox-preserving transforms only. Off by default
+so the existing data path is bit-exact equivalent. Apply *after*
+``resize_to_canvas`` and *before* ``pad_to_multiple`` so the pipeline
+sees the final-resolution image.
+
+Operates on :class:`PIL.Image` + a list of
+:class:`vista_ocr.tokenizer.tokenizer.Line` objects. Returns the same
+shape (PIL, list[Line]); the bboxes are co-transformed by Albumentations.
+
+Defensive design choices:
+
+- ``border_mode=cv2.BORDER_REPLICATE`` for rotation: avoids black borders
+  that look like pseudo-text content.
+- ``min_visibility=0.5`` on BboxParams: rotation that pushes a line's
+  bbox more than half off-canvas drops the line rather than keeping a
+  truncated, mislabelled box.
+- No perspective transform. The earlier draft included it; bbox
+  preservation under perspective is brittle and the gain on document
+  OCR is small.
+- JPEG quality 70-95 (not 60-95): heavy compression on grayscale
+  produces banding that can flip pixels around bbox edges.
+- All probabilities default to 0.5 so on average half the samples are
+  unaugmented; that keeps the loss surface anchored.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+import numpy as np
+from PIL import Image
+
+from vista_ocr.tokenizer.tokenizer import Line
+
+LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class AugmentConfig:
+    """Conservative paper-Appendix-aligned augmentation config.
+
+    The paper Appendix 0.A.4 names: background markup, slanted text,
+    shadow effects, poor resolution. We model "poor resolution" via
+    JPEG and mild blur, "slanted text" via a small rotation, and add
+    brightness/contrast jitter (not paper-named) to harden the encoder
+    against scanned-document inputs.
+    """
+
+    enabled: bool = False
+    rotate_deg: float = 2.0
+    brightness_limit: float = 0.10
+    contrast_limit: float = 0.10
+    blur_max_sigma: float = 0.8
+    jpeg_quality_min: int = 70
+    jpeg_quality_max: int = 95
+    p_each: float = 0.5
+    bbox_min_visibility: float = 0.5
+
+
+class Augmenter:
+    """Bbox-aware augmenter. Disabled instances are no-ops; checking
+    ``cfg.enabled`` is the only allocation cost."""
+
+    def __init__(self, cfg: AugmentConfig | None = None) -> None:
+        self.cfg = cfg or AugmentConfig()
+        self._pipeline = None
+        if self.cfg.enabled:
+            self._pipeline = self._build_pipeline()
+
+    def _build_pipeline(self):
+        import albumentations as A  # noqa: PLC0415
+        import cv2  # noqa: PLC0415
+
+        cfg = self.cfg
+        # Albumentations expects an odd kernel size for GaussianBlur;
+        # derive from the requested sigma.
+        blur_kmax = max(3, int(cfg.blur_max_sigma * 6) | 1)
+        return A.Compose(
+            [
+                A.Rotate(
+                    limit=cfg.rotate_deg,
+                    p=cfg.p_each,
+                    border_mode=cv2.BORDER_REPLICATE,
+                ),
+                A.RandomBrightnessContrast(
+                    brightness_limit=cfg.brightness_limit,
+                    contrast_limit=cfg.contrast_limit,
+                    p=cfg.p_each,
+                ),
+                A.GaussianBlur(blur_limit=(3, blur_kmax), p=cfg.p_each),
+                A.ImageCompression(
+                    quality_range=(cfg.jpeg_quality_min, cfg.jpeg_quality_max),
+                    p=cfg.p_each,
+                ),
+            ],
+            bbox_params=A.BboxParams(
+                format="pascal_voc",
+                label_fields=["line_idx"],
+                min_visibility=cfg.bbox_min_visibility,
+            ),
+        )
+
+    def __call__(
+        self, image: Image.Image, lines: list[Line]
+    ) -> tuple[Image.Image, list[Line]]:
+        if not self.cfg.enabled or self._pipeline is None:
+            return image, lines
+        if not lines:
+            return image, lines
+
+        # Albumentations works on numpy arrays. Grayscale PIL ('L') -> 2D.
+        img_np = np.asarray(image.convert("L"), dtype=np.uint8)
+        bboxes = [list(map(float, ln.bbox)) for ln in lines]
+        # min_visibility filters out bboxes that go too far out; we keep
+        # the ``line_idx`` so we can pair surviving bboxes back to the
+        # right text strings even when reordered.
+        line_idx = list(range(len(lines)))
+
+        out = self._pipeline(image=img_np, bboxes=bboxes, line_idx=line_idx)
+        new_img = Image.fromarray(out["image"], mode="L")
+
+        new_lines: list[Line] = []
+        for bbox, idx in zip(out["bboxes"], out["line_idx"], strict=True):
+            x1, y1, x2, y2 = (int(round(v)) for v in bbox)
+            if x2 <= x1 or y2 <= y1:
+                continue
+            new_lines.append(Line(text=lines[idx].text, bbox=(x1, y1, x2, y2)))
+        return new_img, new_lines
+
+
+__all__ = ["AugmentConfig", "Augmenter"]

@@ -92,13 +92,35 @@ def _bbox_contains(outer: tuple[int, int, int, int], inner: tuple[int, int, int,
     return ox1 <= ix1 and oy1 <= iy1 and ox2 >= ix2 and oy2 >= iy2
 
 
+def _maybe_build_augmenter(cfg):
+    """Return an :class:`Augmenter` if ``cfg`` is a truthy
+    :class:`AugmentConfig`, else ``None``. Imports lazily so the
+    augmentation deps (albumentations, cv2) are loaded only when used."""
+    if cfg is None:
+        return None
+    from vista_ocr.data.augment import AugmentConfig, Augmenter  # noqa: PLC0415
+    if not isinstance(cfg, AugmentConfig):
+        raise TypeError(f"pre_cfg.augment must be AugmentConfig or None, got {type(cfg)}")
+    if not cfg.enabled:
+        return None
+    return Augmenter(cfg)
+
+
 def collate(
     samples: list[Sample],
     tokenizer: VistaTokenizer,
     pre_cfg: PreprocessConfig,
 ) -> Batch:
     """Image preprocessing + token batching. Pads images to the largest in
-    the batch (multiple of ``pre_cfg.pad_multiple``)."""
+    the batch (multiple of ``pre_cfg.pad_multiple``).
+
+    When ``pre_cfg.augment`` is set to a truthy
+    :class:`vista_ocr.data.augment.AugmentConfig`, applies the bbox-aware
+    augmenter AFTER ``resize_to_canvas`` and BEFORE ``pad_to_multiple``.
+    The augmenter mutates ``sample.lines`` in the local ``s`` reference;
+    the caller's sample is not modified.
+    """
+    augmenter = _maybe_build_augmenter(pre_cfg.augment)
     image_tensors: list[torch.Tensor] = []
     seqs: list[list[int]] = []
     prompt_lens: list[int] = []
@@ -108,6 +130,12 @@ def collate(
             t = s.image if s.image.dim() == 4 else s.image.unsqueeze(0)
         else:
             img, _, _ = resize_to_canvas(s.image, pre_cfg)
+            if augmenter is not None:
+                img, aug_lines = augmenter(img, s.lines)
+                # Build a shadow Sample so build_target_ids sees the
+                # augmented bboxes without mutating the caller's object.
+                from dataclasses import replace as _replace  # noqa: PLC0415
+                s = _replace(s, image=img, lines=aug_lines)
             img, _ = pad_to_multiple(img, pre_cfg.pad_multiple)
             t = to_tensor(img)
         image_tensors.append(t)
