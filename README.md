@@ -1,5 +1,10 @@
 # vista-ocr
 
+> **Unofficial / third-party reimplementation.** This repository is not
+> authored by, affiliated with, or endorsed by the original VISTA-OCR
+> authors. The original paper has no public reference implementation;
+> this is a clean-room PyTorch port based on the published description.
+
 A from-scratch PyTorch reimplementation of **VISTA-OCR** (Hamdi, Tamasna,
 Boisson, Paquet — *VISTA-OCR: Towards generative and interactive end to
 end OCR models*, [arXiv:2504.03621](https://arxiv.org/abs/2504.03621),
@@ -297,9 +302,10 @@ ablation scripts under `scripts/`.
 
 MIT — see [`LICENSE`](LICENSE).
 
-## Citing
+## Citing the paper
 
-If this implementation helps your work, please cite the paper:
+This repository is not the artefact to cite. If this implementation
+helps your work, please cite the original paper:
 
 ```bibtex
 @article{hamdi2025vistaocr,
