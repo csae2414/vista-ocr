@@ -8,6 +8,7 @@ API Reference
    models
    training
    data
+   ablation
    eval
    inference
    logging

@@ -46,5 +46,7 @@ docs/_build/
 *.local.yaml
 IMPROVEMENTS.md
 
-# Local working notes -- never tracked
+# Local working notes / planning -- never tracked
 notes/
+PLAN.md
+PLAN_*.md

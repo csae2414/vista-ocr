@@ -43,11 +43,17 @@ messages and module docstrings.
   with checkpoint + auto-resume, periodic validation, and ckpt_best on
   val improvement.
 - **Speed**: bf16 autocast, encoder gradient checkpointing, KV-cache
-  decoding, multi-worker DataLoader. Empirically benchmarked on the GPU
-  (PLAN_VM has the numbers).
+  decoding, multi-worker DataLoader. Optional opt-in
+  `MBartAttention -> SDPA` monkey-patch with a CI ship-gate (forward,
+  backward, KV-cache, beam log-prob, autocast bf16 at the paper shape;
+  `python -m vista_ocr.models.sdpa_patch --check`).
 - **Eval**: CER, WER, word-exact F1, Wolf & Jolion DetEval (paper
   ref [37]), Area-F1, AP@IoU{0.5, 0.6, 0.7, 0.8}.
-- **101 unit tests**, Sphinx API docs, MIT licensed.
+- **VRAM-aware page resolution** via `--page-preset {tiny, small,
+  medium, large, auto}` on the stage scripts; `auto` queries CUDA
+  VRAM and picks a sensible canvas (medium = 1100×850 fits the 24 GB
+  3090).
+- **242 unit tests**, Sphinx API docs, MIT licensed.
 
 ## Quick start
 
@@ -61,7 +67,7 @@ to rerun.
 conda env create -f environment.yml
 conda activate vista-ocr
 pip install -e .
-pytest -q                         # ~1 minute, 102 tests
+pytest -q                         # ~90 seconds, 242 tests
 
 # GPU box (CUDA 12.1)
 conda env create -f environment-cuda.yml
@@ -100,6 +106,13 @@ tmux new -s pretrain
 The chain runs all three stages back-to-back, auto-discovers the highest
 shard as the val set, writes `checkpoints/stage{1,2,3}/`, and **resumes
 automatically** if killed mid-run (just rerun the same command).
+
+Each stage script accepts `--page-preset {tiny,small,medium,large,auto}`
+(or explicit `--page-h`/`--page-w`); `auto` picks a canvas based on
+the visible CUDA VRAM (medium = 1100×850 on a 24 GB 3090). The stages
+also accept `--sdpa` to enable the SDPA monkey-patch, which runs the
+ship-gate first and writes the PASS line to
+`<out>/sdpa_manifest.txt` for paper-comparison reproducibility.
 
 Expect ≈ 0.13 s / step on a single RTX 3090 → roughly **6 hours**
 total at the default 20K + 80K + 70K steps. A100 is ~3× faster.
@@ -207,12 +220,14 @@ vista-ocr/
 ├── src/vista_ocr/
 │   ├── tokenizer/       SentencePiece + spatial grid + 3 schemes
 │   ├── models/          DANIEL encoder, mBART/Donut decoder, VistaOCR wrapper
+│   ├── ablation/        Ablation harness shared by ablate_*.py
 │   ├── data/            Preprocess, collate, multi-worker dataloader,
-│   │                    pdfa, idl, iam, maurdor, sroie loaders + synth/
+│   │                    pdfa, idl, iam, maurdor, sroie loaders + synth/,
+│   │                    BBox value object, PdfaShardReader
 │   ├── training/        Combined loss, schedules, callbacks, train loop
 │   ├── eval/            CER/WER, Wolf & Jolion DetEval, AP@IoU
 │   └── inference/       Greedy/beam generation + output parser
-└── tests/               101 unit tests
+└── tests/               242 unit tests
 ```
 
 ## Paper faithfulness
@@ -263,10 +278,11 @@ ablation scripts under `scripts/`.
 | Eval metrics (CER, WER, F1, Wolf & Jolion, Area-F1, AP@IoU) | ✅ |
 | Stage-1 → Stage-2 → Stage-3 chain script | ✅ |
 | Sphinx API docs | ✅ |
-| 101 / 101 unit tests passing | ✅ |
+| 242 / 242 unit tests passing | ✅ |
+| SDPA fast attention (opt-in monkey-patch + ship-gate) | ✅ |
+| VRAM-aware page resolution presets | ✅ |
 | Long pretraining runs at scale | 🟡 plumbing verified, runtime hours |
 | Per-dataset finetune numbers vs paper | 🟡 needs licence-restricted data |
-| SDPA / FlashAttention-2 fast attention path | 🟡 blocked by HF #28005 |
 | `torch.compile` win | 🟡 needs fixed-bucket page sizes |
 
 ## Hardware notes
@@ -279,8 +295,13 @@ ablation scripts under `scripts/`.
   MBart eager attention path; we run validation in fp32 as a workaround.
 - `MBartForCausalLM` SDPA / FlashAttention-2 is unsupported in
   `transformers==4.44.2`
-  ([HF #28005](https://github.com/huggingface/transformers/issues/28005));
-  documented but not blocking.
+  ([HF #28005](https://github.com/huggingface/transformers/issues/28005)).
+  Workaround: an opt-in monkey-patch in
+  `vista_ocr.models.sdpa_patch` with a ship-gate (forward / backward /
+  KV-cache / beam log-prob / autocast bf16 at the paper shape).
+  Enable per-stage with `--sdpa`; the gate writes a manifest to
+  `<out>/sdpa_manifest.txt`. Disable with `VISTA_NO_SDPA=1`; skip the
+  gate (after operator verification) with `VISTA_SDPA_SKIP_CHECK=1`.
 
 ## References
 

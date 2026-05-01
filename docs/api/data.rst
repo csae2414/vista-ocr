@@ -6,6 +6,11 @@ Shared types
 
 .. automodule:: vista_ocr.data.types
 
+Bounding-box value object
+-------------------------
+
+.. automodule:: vista_ocr.data.bbox
+
 Preprocessing
 -------------
 
@@ -27,6 +32,8 @@ Real datasets
 -------------
 
 .. automodule:: vista_ocr.data.pdfa
+
+.. automodule:: vista_ocr.data.pdfa_shard
 
 .. automodule:: vista_ocr.data.idl
 

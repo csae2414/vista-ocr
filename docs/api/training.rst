@@ -11,6 +11,16 @@ LR + dropout schedules
 
 .. automodule:: vista_ocr.training.schedules
 
+Page-resolution presets (VRAM-aware)
+------------------------------------
+
+.. automodule:: vista_ocr.training.resolution
+
+Validation helpers
+------------------
+
+.. automodule:: vista_ocr.training.val_helpers
+
 Callbacks: checkpoint + validation
 ----------------------------------
 
