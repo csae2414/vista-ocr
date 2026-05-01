@@ -149,7 +149,10 @@ def iter_pdfa(cfg: PdfaConfig) -> Iterator[Sample]:
     ``webdataset`` is imported lazily so unit tests don't need it."""
     import webdataset as wds  # noqa: PLC0415
 
-    pipeline = wds.WebDataset(cfg.shards, shardshuffle=False)
+    # empty_check=False so a per-worker shard slice that happens to be
+    # empty (workers > shards) does not raise; the worker just yields
+    # nothing and the DataLoader keeps draining the others.
+    pipeline = wds.WebDataset(cfg.shards, shardshuffle=False, empty_check=False)
     for raw in pipeline:
         try:
             yield from _decode_pdfa_record(raw, cfg)

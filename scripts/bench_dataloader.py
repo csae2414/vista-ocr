@@ -33,25 +33,27 @@ from vista_ocr.training.train_loop import TrainConfig, train
 LOG = logging.getLogger("bench")
 
 
-def _build_model(vocab: int, use_mbart: bool = False) -> VistaOCR:
+def _build_model(vocab: int, use_mbart: bool = False, attn: str = "eager") -> VistaOCR:
     from vista_ocr.models.decoder import MBartDecoder
     enc = FCNEncoderWidther(input_channels=1, dropout=0.0, gradient_checkpointing=True)
     if use_mbart:
         dec = MBartDecoder.from_pretrained_mbart50(
             vocab_size=vocab, decoder_layers=12, max_position_embeddings=4096,
-            load_pretrained_body=False,             # bench: skip 2GB download
+            load_pretrained_body=False,
+            attn_implementation=attn,
         )
     else:
         dec = small_random_decoder(
             vocab_size=vocab, d_model=1024, n_layers=4, n_heads=8, ffn_dim=2048,
             max_position_embeddings=4096,
+            attn_implementation=attn,
         )
     return VistaOCR(enc, dec)
 
 
 def _run(
     *,
-    shard: Path,
+    shard: Path | list[Path],
     spm: Path,
     steps: int,
     page_h: int,
@@ -59,16 +61,19 @@ def _run(
     num_workers: int,
     seed: int,
     use_mbart: bool = False,
+    attn: str = "eager",
+    compile_mode: str | None = None,
 ) -> tuple[float, list[float]]:
     torch.manual_seed(seed)
     grid = SpatialGrid(canvas_h=3508, canvas_w=2480, quantizer_px=10, scheme="original")
     tokenizer = VistaTokenizer(spm_model_path=str(spm), grid=grid)
-    model = _build_model(tokenizer.vocab_size, use_mbart=use_mbart)
+    model = _build_model(tokenizer.vocab_size, use_mbart=use_mbart, attn=attn)
 
     pre_cfg = PreprocessConfig(target_h=page_h, target_w=page_w, pad_multiple=32)
+    shards_list = [str(p) for p in (shard if isinstance(shard, list) else [shard])]
     if num_workers > 0:
         loader = make_pdfa_dataloader(
-            shards=[str(shard)],
+            shards=shards_list,
             tokenizer=tokenizer,
             pre_cfg=pre_cfg,
             dl_cfg=DataLoaderConfig(
@@ -79,7 +84,7 @@ def _run(
         )
         stream = iter(loader)
     else:
-        stream = iter_pdfa(PdfaConfig(shards=[str(shard)]))
+        stream = iter_pdfa(PdfaConfig(shards=shards_list))
 
     train_cfg = TrainConfig(
         base_lr=3e-4, warmup_steps=20, total_steps=steps,
@@ -87,8 +92,12 @@ def _run(
         lambda_text=1.0, target_h=page_h, target_w=page_w, pad_multiple=32,
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
         freeze_decoder=True, adam_betas=(0.9, 0.98), adam_eps=1e-6,
-        label_smoothing=0.1,
+        label_smoothing=0.1, compile_model=compile_mode is not None,
     )
+    if compile_mode is not None:
+        # Set the global default so train_loop's torch.compile call uses our mode.
+        import torch._dynamo as dynamo
+        dynamo.config.cache_size_limit = 64
 
     t0 = time.perf_counter()
     history = train(model, stream, tokenizer, train_cfg, max_steps=steps)
@@ -98,7 +107,8 @@ def _run(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shard", required=True, type=Path)
+    ap.add_argument("--shard", required=True, type=Path, nargs="+",
+                    help="One or more PDFA shard tar files")
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--steps", type=int, default=100)
     ap.add_argument("--page-h", type=int, default=1100)
@@ -107,6 +117,9 @@ def main() -> None:
     ap.add_argument("--workers-list", nargs="+", type=int, default=[0, 4])
     ap.add_argument("--use-mbart", action="store_true",
                     help="Use 12-layer mBART decoder (compute-heavy; tests CPU<->GPU overlap)")
+    ap.add_argument("--attn", default="eager", choices=("eager", "sdpa"))
+    ap.add_argument("--compile", dest="compile_mode", default=None,
+                    choices=(None, "default", "reduce-overhead", "max-autotune"))
     args = ap.parse_args()
 
     setup_logging(level="INFO")
@@ -118,6 +131,7 @@ def main() -> None:
             shard=args.shard, spm=args.spm,
             steps=args.steps, page_h=args.page_h, page_w=args.page_w,
             num_workers=nw, seed=args.seed, use_mbart=args.use_mbart,
+            attn=args.attn, compile_mode=args.compile_mode,
         )
         results.append((nw, elapsed, losses))
         LOG.info("workers=%d  elapsed=%.1fs  per-step=%.3fs  first/last loss=%.3f/%.3f",

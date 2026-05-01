@@ -33,13 +33,14 @@ def small_random_decoder(
     n_heads: int = 4,
     ffn_dim: int = 128,
     max_position_embeddings: int = 256,
+    attn_implementation: str = "eager",
 ) -> "MBartDecoder":
     """Build a tiny randomly-initialised :class:`MBartDecoder` for tests.
     Skips the ~610 MB pretrained download."""
     cfg = MBartConfig(
         vocab_size=vocab_size,
         d_model=d_model,
-        encoder_layers=1,           # unused — we only run the decoder side
+        encoder_layers=1,           # unused -- we only run the decoder side
         decoder_layers=n_layers,
         decoder_attention_heads=n_heads,
         encoder_attention_heads=n_heads,
@@ -51,6 +52,7 @@ def small_random_decoder(
         add_cross_attention=True,
         tie_word_embeddings=True,
     )
+    cfg._attn_implementation = attn_implementation
     model = MBartForCausalLM(cfg)
     return MBartDecoder.from_model(model, d_model=d_model, vocab_size=vocab_size)
 
@@ -95,6 +97,7 @@ class MBartDecoder(nn.Module):
         decoder_layers: int = 12,
         max_position_embeddings: int = 4096,
         load_pretrained_body: bool = True,
+        attn_implementation: str = "sdpa",
     ) -> "MBartDecoder":
         """Build the paper's decoder: 12-layer mBART-50 decoder with vocab
         resized to our EN-only vocab. If ``load_pretrained_body`` is True
@@ -112,6 +115,7 @@ class MBartDecoder(nn.Module):
         cfg.is_encoder_decoder = False
         cfg.add_cross_attention = True
         cfg.tie_word_embeddings = True
+        cfg._attn_implementation = attn_implementation
 
         model = MBartForCausalLM(cfg)
         if ref is not None:
