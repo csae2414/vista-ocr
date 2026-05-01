@@ -45,3 +45,6 @@ docs/_build/
 .envrc
 *.local.yaml
 IMPROVEMENTS.md
+
+# Local working notes -- never tracked
+notes/
