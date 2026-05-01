@@ -51,14 +51,17 @@ messages and module docstrings.
 
 ## Quick start
 
+The fastest path uses three helper scripts. Each is idempotent and safe
+to rerun.
+
 ### 1. Environment
 
 ```bash
-# CPU dev (Linux/macOS)
+# CPU dev (Linux / macOS)
 conda env create -f environment.yml
 conda activate vista-ocr
 pip install -e .
-pytest -q                         # 101 tests, ~1 minute
+pytest -q                         # ~1 minute, 102 tests
 
 # GPU box (CUDA 12.1)
 conda env create -f environment-cuda.yml
@@ -66,72 +69,53 @@ conda activate vista-ocr
 pip install -e .
 ```
 
-### 2. Train a SentencePiece tokenizer
-
-A small WikiText-2 corpus is enough to bootstrap the spatial-token grid
-+ subword vocab. Once you have PDFA shards downloaded, retrain on the
-real corpus for better subword splits.
+### 2. Pull data + train tokenizer (≈ 10 GB, one-shot)
 
 ```bash
-python scripts/bootstrap_tokenizer.py
-# -> data/processed/vocab/sp_en_16k.model
+./scripts/setup_data.sh                # 12 PDFA shards from HuggingFace
+# or: NUM_SHARDS=24 ./scripts/setup_data.sh   # 24 shards (~20 GB)
 ```
 
-### 3. Pull PDFA shards
+This calls `scripts/download_pdfa.py` (HuggingFace `pixparse/pdfa-eng-wds`,
+shards 0000..0011 by default) and `scripts/bootstrap_tokenizer.py`
+(WikiText-2 SentencePiece). Outputs end up in `data/raw/pdfa/` and
+`data/processed/vocab/`.
 
-```bash
-python -c "
-from huggingface_hub import hf_hub_download
-for i in range(12):
-    hf_hub_download(
-        'pixparse/pdfa-eng-wds',
-        filename=f'pdfa-eng-train-{i:04d}.tar',
-        repo_type='dataset',
-        local_dir='data/raw/pdfa',
-    )
-"
-# 12 shards ≈ 10 GB
-```
-
-### 4. Stage-1 calibration
-
-Frozen-decoder warm-up at LR 3e-4. Stops if loss diverges; auto-resumes
-if killed and restarted with the same flags.
-
-```bash
-CUBLAS_WORKSPACE_CONFIG=:4096:8 python scripts/stage1_run.py \
-  --train-shards data/raw/pdfa/pdfa-eng-train-000{0,1,2}.tar \
-  --val-shard    data/raw/pdfa/pdfa-eng-train-0003.tar \
-  --spm          data/processed/vocab/sp_en_16k.model \
-  --out          checkpoints/stage1 \
-  --steps 20000 --val-every 500 --ckpt-every 500
-```
-
-Expect ≈ 0.13 s / step on an RTX 3090.
-
-### 5. Stage-2 + Stage-3 chain
-
-The ready-made `pretrain_chain.sh` (generated for the GPU VM) runs
-multimodal then multitask pretraining. Run under tmux so SSH disconnect
-doesn't kill it.
+### 3. Pretrain (stage-1 → stage-2 → stage-3, unattended)
 
 ```bash
 tmux new -s pretrain
-./pretrain_chain.sh 2>&1 | tee logs/pretrain_chain.log
+./scripts/pretrain_chain.sh 2>&1 | tee logs/pretrain_chain.log
 # detach: Ctrl-b d ; reattach: tmux attach -t pretrain
 ```
 
-### 6. Finetune + benchmark
+The chain runs all three stages back-to-back, auto-discovers the highest
+shard as the val set, writes `checkpoints/stage{1,2,3}/`, and **resumes
+automatically** if killed mid-run (just rerun the same command).
 
-Once IAM / MAURDOR / SROIE are downloaded under their licences:
+Expect ≈ 0.13 s / step on a single RTX 3090 → roughly **6 hours**
+total at the default 20K + 80K + 70K steps. A100 is ~3× faster.
+
+### 4. Finetune + benchmark
+
+Once IAM / MAURDOR / SROIE are downloaded under their licences into
+`data/raw/<dataset>/` (see each loader docstring for the layout):
 
 ```bash
-python scripts/finetune_eval.py --dataset sroie  --root data/raw/sroie  \
-    --spm data/processed/vocab/sp_en_16k.model                          \
-    --checkpoint checkpoints/stage3/ckpt_best.pt --steps 5000
+./scripts/finetune_chain.sh
+# or: DATASETS="sroie" ./scripts/finetune_chain.sh    # subset
+```
 
-python scripts/finetune_eval.py --dataset iam     --root data/raw/iam     ...
-python scripts/finetune_eval.py --dataset maurdor --root data/raw/maurdor ...
+This runs `scripts/finetune_eval.py` per dataset with the paper's batch
+sizes (RIMES=4, IAM=6, SROIE=2 — paper Section 4.2) and writes one log
+per dataset under `logs/`. Compare the printed metrics to
+[`BENCHMARKS.md`](BENCHMARKS.md) which has the paper targets.
+
+### 5. Verify against the paper
+
+```bash
+grep -E "F1|WER|Area" logs/finetune_*.log
+# fill the result into BENCHMARKS.md and open a PR if you reproduce
 ```
 
 ## Architecture
@@ -197,6 +181,10 @@ vista-ocr/
 ├── configs/             YAML configs (base + per-stage + per-finetune)
 ├── docs/                Sphinx API docs (run: cd docs && make html)
 ├── scripts/
+│   ├── setup_data.sh              Helper: download PDFA + train tokenizer
+│   ├── pretrain_chain.sh          Helper: run stage-1 → stage-2 → stage-3
+│   ├── finetune_chain.sh          Helper: per-dataset finetune + eval
+│   ├── download_pdfa.py           Pull N shards from HuggingFace
 │   ├── bootstrap_tokenizer.py     Train SPM on WikiText-2
 │   ├── stage1_run.py              Stage-1 calibration
 │   ├── stage2_run.py              Stage-2 multimodal
