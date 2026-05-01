@@ -50,7 +50,7 @@ dependencies:
       # flash-attn requires a system CUDA toolkit (not bundled with PyTorch
       # wheels). Uncomment + install the toolkit if you have one. The
       # MBartForCausalLM SDPA path is also gated by HF transformers issue
-      # #28005 -- see PLAN_VM.md for the full status.
+      # #28005 for the full status.
       # - flash-attn==2.6.3
       - sphinx
       - sphinx-rtd-theme

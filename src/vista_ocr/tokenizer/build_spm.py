@@ -1,9 +1,9 @@
 """Train a SentencePiece BPE tokenizer for VISTA-OCR.
 
 The paper says only that they "decreased the vocabulary size" from mBART's
-default; concrete number not given. We default to 16k subwords
-(PLAN.md, section 12.6). Special and spatial tokens are registered as
-``user_defined_symbols`` so SentencePiece never splits them.
+default; concrete number not given. We default to 16k subwords. Special
+and spatial tokens are registered as ``user_defined_symbols`` so
+SentencePiece never splits them.
 
 Example::
 

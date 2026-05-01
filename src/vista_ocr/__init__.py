@@ -1,3 +1,3 @@
-"""VISTA-OCR reimplementation. See PLAN.md for design and references."""
+"""VISTA-OCR reimplementation. See README.md for design and references."""
 
 __version__ = "0.0.1"

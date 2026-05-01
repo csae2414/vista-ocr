@@ -11,5 +11,5 @@ This project implements VISTA-OCR end-to-end:
 - **Eval** — CER, WER, word-exact F1, Wolf & Jolion DetEval, AP@IoU, Area-F1 (`vista_ocr.eval`).
 - **Inference** — greedy / beam decoding plus output parser (`vista_ocr.inference.generate`).
 
-See `PLAN.md` for the paper-faithfulness audit and the explicit list of
+See `README.md` for the paper-faithfulness audit and the explicit list of
 hyperparameters that are *not* stated in the paper and therefore guessed.
