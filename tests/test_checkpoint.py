@@ -95,6 +95,32 @@ def test_run_validation_handles_empty_iterator():
     assert out["n_batches"] == 0
 
 
+def test_cross_stage_resume_preserves_rng_stream(tmp_path: Path, model_and_optim):
+    """A5 gap closed: a checkpoint produced by stage1 must be loadable by
+    stage2 such that the post-load RNG draws are identical to what they
+    would have been in the saving process. Catches the class of bug
+    where the RNG state format changes between stages or gets cast in a
+    way that perturbs the stream."""
+    m, o = model_and_optim
+    # Pre-save: take some draws to perturb the RNG, then capture state.
+    torch.randn(7)
+    save_checkpoint(tmp_path / "stage1.pt", step=42, model=m, optimizer=o)
+
+    # The "stage1 process" continues -- record what its next 5 draws are.
+    expected_next = torch.randn(5).tolist()
+
+    # In a fresh "stage2 process" we load the checkpoint and assert the
+    # RNG produces the same draws.
+    m2 = _Tiny()
+    o2 = torch.optim.AdamW(m2.parameters(), lr=1e-3)
+    payload = load_checkpoint(
+        tmp_path / "stage1.pt", model=m2, optimizer=o2, map_location="cpu",
+    )
+    assert payload.step == 42
+    actual_next = torch.randn(5).tolist()
+    assert actual_next == pytest.approx(expected_next, abs=0)
+
+
 def test_load_checkpoint_with_non_cpu_map_location(tmp_path: Path, model_and_optim):
     """Regression test for the resume crash: map_location="cuda" moves the
     RNG ByteTensor off CPU; torch.set_rng_state then rejects it. The

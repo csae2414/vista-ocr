@@ -45,6 +45,24 @@ def test_linear_warmup_cosine_min_lr_ratio_floor():
     assert linear_warmup_cosine(50, **cfg) > 5e-5
 
 
+def test_linear_warmup_cosine_handoff_is_continuous():
+    """A4 gap: the warmup -> cosine handoff must not jump.
+
+    At step == warmup_steps - 1 (last warmup) and step == warmup_steps
+    (first cosine) the LR must be ~base_lr; the difference must be
+    negligible. A bug here would be invisible to the floor test.
+    """
+    cfg = {"warmup_steps": 100, "total_steps": 1000, "base_lr": 1e-3,
+           "min_lr_ratio": 0.05}
+    last_warmup = linear_warmup_cosine(99, **cfg)
+    first_cosine = linear_warmup_cosine(100, **cfg)
+    assert last_warmup == pytest.approx(1e-3, rel=1e-9)
+    assert first_cosine == pytest.approx(1e-3, rel=1e-9)
+    # And the slope across the handoff is finite (no spike).
+    next_cosine = linear_warmup_cosine(101, **cfg)
+    assert abs(first_cosine - next_cosine) < 1e-3 * 1e-3  # tiny step
+
+
 def test_exponential_dropout_grows_to_one():
     assert exponential_dropout(0) == pytest.approx(0.0)
     assert exponential_dropout(int(1e6)) > 0.999
@@ -213,6 +231,35 @@ def test_run_validation_decode_n_emits_metrics():
     assert out["val_word_f1"] == pytest.approx(1.0)
     assert out["val_decoded_n"] == 2
     assert out["val_decoded_n_empty"] == 0
+
+
+def test_run_validation_counts_empty_hypotheses():
+    """B3 gap: empty decoder outputs (silent failures) must show up in
+    val_decoded_n_empty so an operator notices a model collapsing to
+    EOS-only generations."""
+    import torch
+    from torch import nn
+
+    from vista_ocr.training.callbacks import run_validation
+    m = nn.Linear(2, 1)
+
+    def loss_fn(model, batch):
+        return torch.tensor(0.1)
+
+    def decode_fn(model, batch):
+        idx, gt = batch
+        # First batch: model emits empty string (EOS-only collapse).
+        # Second batch: model emits a real prediction.
+        if idx == 0:
+            return [gt], [""]
+        return [gt], [gt]
+
+    out = run_validation(
+        m, iter([(0, "hello world"), (1, "foo bar")]),
+        loss_fn, max_batches=2, decode_fn=decode_fn, decode_n=2,
+    )
+    assert out["val_decoded_n"] == 2
+    assert out["val_decoded_n_empty"] == 1
 
 
 def test_run_validation_warns_on_majority_empty(caplog):

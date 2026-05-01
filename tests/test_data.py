@@ -154,6 +154,31 @@ def test_mixture_relabels_to_chosen_task():
     assert all(s.query_bbox is not None for s in out)
 
 
+def test_taskmix_weights_govern_sampling_distribution():
+    """A3 gap closed: passing non-uniform --w-* weights to stage3 must
+    actually skew the per-step task distribution. Catches the class of
+    bug where weights are accepted but ignored downstream."""
+    import random
+    mix = TaskMix({
+        "ocr": 0.7, "ocr_layout": 0.1, "region_ocr": 0.1, "find_it": 0.1,
+    })
+    rng = random.Random(0)
+    counts = {"ocr": 0, "ocr_layout": 0, "region_ocr": 0, "find_it": 0}
+    for _ in range(2000):
+        counts[mix.sample_task(rng)] += 1
+    # OCR should dominate (~70%) and others should be small but present.
+    assert counts["ocr"] > 1200    # ~70% of 2000 ± stochastic
+    assert counts["ocr"] < 1600
+    for other in ("ocr_layout", "region_ocr", "find_it"):
+        assert 100 < counts[other] < 350  # ~10%
+    # And degenerate weight=0 truly excludes a task.
+    rng2 = random.Random(0)
+    mix_zero = TaskMix({"ocr": 1.0, "ocr_layout": 0.0,
+                         "region_ocr": 0.0, "find_it": 0.0})
+    samples = [mix_zero.sample_task(rng2) for _ in range(500)]
+    assert all(s == "ocr" for s in samples)
+
+
 # ---------- synth ----------
 
 def test_synthdog_emits_bboxes_within_canvas():

@@ -173,3 +173,54 @@ def test_train_spm_on_filtered_corpus(tmp_path: Path):
     tk = VistaTokenizer(model_path, grid)
     for tok in grid.all_tokens()[:5]:
         assert tk.piece_to_id(tok) != tk.unk_id
+
+
+def test_retrained_spm_round_trips_text_and_spatial_tokens(tmp_path: Path):
+    """B5 gap closed: a tokenizer built from the script's own pipeline
+    must encode + decode arbitrary line text and emit valid spatial
+    token IDs. Catches the class of bug where SPM training succeeds
+    but the produced model misencodes spatial tokens (e.g. wrong byte
+    encoding or split across BPE pieces)."""
+    from vista_ocr.tokenizer.build_spm import train_spm
+    from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
+    from vista_ocr.tokenizer.tokenizer import (
+        VistaTokenizer,
+        list_special_and_spatial_tokens,
+    )
+
+    raw = [
+        "the quick brown fox jumps over the lazy dog",
+        "Sphinx of black quartz judge my vow",
+        "Hello world receipt total fourty two",
+    ] * 200
+    corpus = tmp_path / "c.txt"
+    retrain.write_corpus(iter(raw), corpus)
+
+    grid = SpatialGrid(canvas_h=128, canvas_w=128, quantizer_px=4, scheme="original")
+    out_prefix = tmp_path / "rt_spm"
+    model_path = train_spm(
+        corpus_path=corpus,
+        out_prefix=out_prefix,
+        vocab_size=180,
+        user_symbols=list_special_and_spatial_tokens(grid),
+    )
+    tk = VistaTokenizer(model_path, grid)
+
+    # 1) Text round-trip: encode_text returns IDs that the SPM piece
+    # decoder can reverse back to a string equal up to whitespace
+    # normalisation.
+    sentence = "Hello world receipt total"
+    ids = tk.encode_text(sentence)
+    assert all(i != tk.unk_id for i in ids), f"unk fell through on: {ids}"
+    decoded = tk.decode_ids(ids)
+    # Sentencepiece BPE may insert a leading space or normalise
+    # multi-spaces; compare on collapsed-whitespace lowercase.
+    assert decoded.replace(" ", "").lower() == sentence.replace(" ", "").lower()
+
+    # 2) Every spatial token in the grid maps to a distinct, non-unk ID.
+    seen = set()
+    for tok in grid.all_tokens():
+        tid = tk.piece_to_id(tok)
+        assert tid != tk.unk_id, f"spatial token {tok} -> unk"
+        assert tid not in seen, f"spatial token collision on {tok}"
+        seen.add(tid)
