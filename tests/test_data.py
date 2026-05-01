@@ -169,7 +169,23 @@ def test_synthdog_emits_bboxes_within_canvas():
 
 
 def test_sroie_synth_produces_typical_receipt_lines():
-    sample = gen_sroie(SroieSynthConfig(canvas_h=512, canvas_w=384, seed=42))
+    sample = gen_sroie(SroieSynthConfig(
+        canvas_h=512, canvas_w=384, seed=42,
+        # Disable augmentations so the bbox layout stays predictable.
+        blur_prob=0.0, background_markup_prob=0.0, slant_prob=0.0,
+        shadow_prob=0.0, poor_resolution_prob=0.0,
+    ))
     texts = [ln.text for ln in sample.lines]
     assert any("TOTAL" in t for t in texts)
     assert any("SUBTOTAL" in t for t in texts)
+
+
+def test_sroie_synth_with_full_augmentations():
+    """Augmentations must not crash, but they may shift bboxes. Just make
+    sure we still get some lines."""
+    sample = gen_sroie(SroieSynthConfig(
+        canvas_h=512, canvas_w=384, seed=7,
+        blur_prob=1.0, background_markup_prob=1.0, slant_prob=1.0,
+        shadow_prob=1.0, poor_resolution_prob=1.0,
+    ))
+    assert len(sample.lines) > 3

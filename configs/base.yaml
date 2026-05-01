@@ -18,17 +18,21 @@ model:
       d_model: 1024
 
   decoder:
-    name: mbart                             # paper-literal: "mBART-based decoder"
-    init_from: facebook/mbart-large-50      # only the decoder weights are kept
-    layers: 12
+    # PLAN_VM "Decoder A/B results" (2026-05-01): donut4 ties mbart12 on
+    # calibration loss (9.159 vs 9.157) at ~1.4x throughput and 134M
+    # fewer parameters, landing at 109M total -- much closer to the
+    # paper's claimed 150M. mbart12 stays as an opt-in via use_mbart=true.
+    name: donut4
+    init_from: random                        # tested without pretrained mBART weights
+    layers: 4
     d_model: 1024
     n_heads: 16
     ffn_dim: 4096
     dropout: 0.1
-    # mBART finetuning convention (and TrOCR uses the same value).
-    label_smoothing: 0.1
-    max_position_embeddings: 4096           # extends mBART's default 1024
+    label_smoothing: 0.1                     # TrOCR / mBART finetuning standard
+    max_position_embeddings: 4096
     tie_word_embeddings: true
+    use_mbart: false                          # opt-in to 12-layer mBART variant
 
 tokenizer:
   type: sentencepiece                       # trained on EN corpus

@@ -97,7 +97,7 @@ class MBartDecoder(nn.Module):
         decoder_layers: int = 12,
         max_position_embeddings: int = 4096,
         load_pretrained_body: bool = True,
-        attn_implementation: str = "sdpa",
+        attn_implementation: str = "eager",
     ) -> "MBartDecoder":
         """Build the paper's decoder: 12-layer mBART-50 decoder with vocab
         resized to our EN-only vocab. If ``load_pretrained_body`` is True
