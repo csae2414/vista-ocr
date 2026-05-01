@@ -81,6 +81,14 @@ shards 0000..0011 by default) and `scripts/bootstrap_tokenizer.py`
 (WikiText-2 SentencePiece). Outputs end up in `data/raw/pdfa/` and
 `data/processed/vocab/`.
 
+For a richer mixed printed + handwritten corpus, also pull
+[HierText](https://huggingface.co/datasets/google-research-datasets/hiertext)
+(~12 GB, CC-BY-4.0):
+
+```bash
+python scripts/download_hiertext.py
+```
+
 ### 3. Pretrain (stage-1 → stage-2 → stage-3, unattended)
 
 ```bash

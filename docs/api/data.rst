@@ -36,6 +36,8 @@ Real datasets
 
 .. automodule:: vista_ocr.data.sroie
 
+.. automodule:: vista_ocr.data.hiertext
+
 Synthetic data
 --------------
 
