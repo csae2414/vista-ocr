@@ -48,13 +48,20 @@ class TrainConfig:
     grad_accum_steps: int = 1
     log_every: int = 50
     lambda_text: float = 0.5
-    label_smoothing: float = 0.0
+    label_smoothing: float = 0.1                  # mBART finetuning standard
     pad_multiple: int = 32
     target_h: int = 3508
     target_w: int = 2480
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
     freeze_decoder: bool = False
+    # mBART-paper Adam betas/eps (vs (0.9, 0.999) / 1e-8 generic default).
+    adam_betas: tuple[float, float] = (0.9, 0.98)
+    adam_eps: float = 1e-6
+    # Speed knobs for the GPU VM. Have no effect on CPU.
+    gradient_checkpointing: bool = False
+    autocast_dtype: torch.dtype | None = None     # set to torch.bfloat16 on A100
+    compile_model: bool = False                    # torch.compile encoder+decoder
 
 
 @dataclass
@@ -69,19 +76,28 @@ class StepStats:
 
 
 def make_optimizer(model: nn.Module, cfg: TrainConfig) -> torch.optim.AdamW:
+    """Build AdamW with mBART-style betas/eps and split weight-decay
+    groups. Only parameters with ``requires_grad=True`` are included --
+    important when ``freeze_decoder=True`` so frozen decoder weights are
+    not allocated optimizer state."""
     decay, no_decay = [], []
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
         (no_decay if p.ndim == 1 or n.endswith(".bias") else decay).append(p)
+    LOG.info(
+        "Optimizer: %d decay params, %d no_decay params (frozen excluded)",
+        sum(p.numel() for p in decay),
+        sum(p.numel() for p in no_decay),
+    )
     return torch.optim.AdamW(
         [
             {"params": decay, "weight_decay": cfg.weight_decay},
             {"params": no_decay, "weight_decay": 0.0},
         ],
         lr=cfg.base_lr,
-        betas=(0.9, 0.999),
-        eps=1e-8,
+        betas=cfg.adam_betas,
+        eps=cfg.adam_eps,
     )
 
 
@@ -119,10 +135,21 @@ def train(
     """
     device = torch.device(cfg.device)
     model.to(device)
+    # Freeze BEFORE optimizer construction so frozen params are excluded
+    # from optimizer state (saves memory + avoids wasted update calls).
     if cfg.freeze_decoder:
         model.freeze_decoder(True)
+    if cfg.gradient_checkpointing and hasattr(model.encoder, "enable_gradient_checkpointing"):
+        model.encoder.enable_gradient_checkpointing(True)
+    if cfg.compile_model:
+        try:
+            model = torch.compile(model)
+            LOG.info("torch.compile() applied to model")
+        except Exception as e:                    # noqa: BLE001
+            LOG.warning("torch.compile failed (%s); continuing eagerly", e)
     optimizer = make_optimizer(model, cfg)
     spatial_ids = tokenizer._spatial_ids
+    autocast_enabled = cfg.autocast_dtype is not None and device.type == "cuda"
     pre_cfg = PreprocessConfig(
         target_h=cfg.target_h, target_w=cfg.target_w, pad_multiple=cfg.pad_multiple
     )
@@ -147,16 +174,29 @@ def train(
             pad_id=batch.pad_id,
         )
 
-        logits = model(batch_device.images, batch_device.decoder_input_ids)
-        out = combined_loss(
-            logits=logits,
-            labels=batch_device.labels,
-            spatial_token_ids=spatial_ids,
-            lambda_text=cfg.lambda_text,
-            pad_id=batch_device.pad_id,
-            prompt_mask=batch_device.prompt_mask,
-            label_smoothing=cfg.label_smoothing,
-        )
+        if autocast_enabled:
+            with torch.autocast(device_type=device.type, dtype=cfg.autocast_dtype):
+                logits = model(batch_device.images, batch_device.decoder_input_ids)
+                out = combined_loss(
+                    logits=logits,
+                    labels=batch_device.labels,
+                    spatial_token_ids=spatial_ids,
+                    lambda_text=cfg.lambda_text,
+                    pad_id=batch_device.pad_id,
+                    prompt_mask=batch_device.prompt_mask,
+                    label_smoothing=cfg.label_smoothing,
+                )
+        else:
+            logits = model(batch_device.images, batch_device.decoder_input_ids)
+            out = combined_loss(
+                logits=logits,
+                labels=batch_device.labels,
+                spatial_token_ids=spatial_ids,
+                lambda_text=cfg.lambda_text,
+                pad_id=batch_device.pad_id,
+                prompt_mask=batch_device.prompt_mask,
+                label_smoothing=cfg.label_smoothing,
+            )
         loss = out.loss / cfg.grad_accum_steps
         loss.backward()
         accum += 1

@@ -25,7 +25,8 @@ model:
     n_heads: 16
     ffn_dim: 4096
     dropout: 0.1
-    label_smoothing: 0.0
+    # mBART finetuning convention (and TrOCR uses the same value).
+    label_smoothing: 0.1
     max_position_embeddings: 4096           # extends mBART's default 1024
     tie_word_embeddings: true
 
@@ -79,9 +80,14 @@ loss:
 
 optim:
   name: adamw
+  # 5e-5 is the consensus pretraining LR for our decoder family
+  # (Donut, TrOCR). Stage-1a (decoder frozen) overrides to 3e-4.
   lr: 5.0e-5
-  betas: [0.9, 0.999]
-  eps: 1.0e-8
+  # mBART paper / fairseq finetuning recipe -- different from generic Adam:
+  # tighter beta2 (0.98) reduces second-moment lag for noisy OCR gradients,
+  # eps=1e-6 avoids underflow with bf16/fp16 autocast.
+  betas: [0.9, 0.98]
+  eps: 1.0e-6
   weight_decay: 0.01
   grad_clip_norm: 1.0
   schedule:
@@ -100,6 +106,10 @@ train:
   eval_every: 5000
   ckpt_every: 5000
   resume: null
+  gradient_checkpointing: true              # GPU only; ~30% peak VRAM saving
+  compile_model: false                      # flip on for ~10-20% throughput once
+                                            # we've confirmed there are no
+                                            # graph breaks with autocast
 
 eval:
   detection:

@@ -126,6 +126,26 @@ def test_overfit_single_sample_loss_decreases(
     assert last_loss < first_loss * 0.6, (first_loss, last_loss)
 
 
+def test_optimizer_excludes_frozen_params(tiny_model: VistaOCR):
+    from vista_ocr.training.train_loop import make_optimizer
+    tiny_model.freeze_decoder(True)
+    cfg = TrainConfig(base_lr=1e-4)
+    opt = make_optimizer(tiny_model, cfg)
+    opt_param_ids = {id(p) for g in opt.param_groups for p in g["params"]}
+    decoder_param_ids = {id(p) for p in tiny_model.decoder.parameters()}
+    assert decoder_param_ids.isdisjoint(opt_param_ids)
+    tiny_model.freeze_decoder(False)
+
+
+def test_optimizer_uses_mbart_betas_and_eps(tiny_model: VistaOCR):
+    from vista_ocr.training.train_loop import make_optimizer
+    cfg = TrainConfig(adam_betas=(0.9, 0.98), adam_eps=1e-6)
+    opt = make_optimizer(tiny_model, cfg)
+    for g in opt.param_groups:
+        assert g["betas"] == (0.9, 0.98)
+        assert g["eps"] == 1e-6
+
+
 def test_freeze_decoder_disables_decoder_grads(
     tiny_model: VistaOCR, tokenizer: VistaTokenizer
 ):

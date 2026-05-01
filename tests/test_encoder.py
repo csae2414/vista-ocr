@@ -90,3 +90,31 @@ def test_set_dropout_propagates(encoder: FCNEncoderWidther):
             assert m.dropout.p == 0.25
             assert m.dropout2d.p == 0.125
     encoder.set_dropout(0.0)
+
+
+def test_torch_seed_makes_encoder_reproducible():
+    """Switching from random.randint to torch.randint means torch.manual_seed
+    is sufficient for bit-exact reproducibility."""
+    enc = FCNEncoderWidther(input_channels=1, dropout=0.4)
+    x = torch.randn(1, 1, 64, 64)
+    enc.train()
+
+    torch.manual_seed(123)
+    y1 = enc(x)
+    torch.manual_seed(123)
+    y2 = enc(x)
+    assert torch.allclose(y1, y2)
+
+
+def test_gradient_checkpointing_runs_and_backward(encoder: FCNEncoderWidther):
+    encoder.enable_gradient_checkpointing(True)
+    encoder.train()
+    try:
+        x = torch.randn(1, 1, 64, 64, requires_grad=True)
+        y = encoder(x)
+        y.sum().backward()
+        assert x.grad is not None
+        assert torch.isfinite(x.grad).all()
+    finally:
+        encoder.enable_gradient_checkpointing(False)
+        encoder.eval()
