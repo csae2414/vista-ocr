@@ -1,12 +1,15 @@
 """Stage-3 multitask pretraining.
 
-Stage-3 introduces all four tasks at equal weight (paper Table 6/7 +
-Section 3.3): ocr / ocr_layout / region_ocr / find_it. Resumes from a
-stage-2 checkpoint.
+Stage-3 introduces all four tasks at equal weight (paper Section 3.3):
+ocr / ocr_layout / region_ocr / find_it. Resumes from a stage-2
+checkpoint.
 
-Per PLAN_VM, find_it query lengths are sampled uniformly in [2..11] words
-(paper Table 6 reports 2-5/5-8/8-11 buckets). Region-OCR picks a random
-existing line bbox as the region prompt.
+Differs from stage-2:
+
+- Multitask sample relabelling via :class:`MixedTaskStream`.
+- B1 dropout schedule still on (continues from stage-2's regime).
+- A4 ``min_lr_ratio`` floor on the cosine schedule.
+- B3 CER/WER reported on the first ``--decode-n`` val batches.
 """
 from __future__ import annotations
 
@@ -18,41 +21,31 @@ from pathlib import Path
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-import torch
+import torch  # noqa: E402
 
-from vista_ocr.data.collate import collate
-from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader
-from vista_ocr.data.mixture import MixedTaskStream, TaskMix
-from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
-from vista_ocr.data.preprocess import PreprocessConfig
-from vista_ocr.logging_config import setup_logging
-from vista_ocr.models.decoder import small_random_decoder
-from vista_ocr.models.encoder import FCNEncoderWidther
-from vista_ocr.models.vista_ocr import VistaOCR
-from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
-from vista_ocr.tokenizer.tokenizer import VistaTokenizer
-from vista_ocr.training.callbacks import (
+from vista_ocr.data.collate import collate  # noqa: E402
+from vista_ocr.data.mixture import MixedTaskStream, TaskMix  # noqa: E402
+from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa  # noqa: E402
+from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
+from vista_ocr.logging_config import setup_logging  # noqa: E402
+from vista_ocr.models.decoder import small_random_decoder  # noqa: E402
+from vista_ocr.models.encoder import FCNEncoderWidther  # noqa: E402
+from vista_ocr.models.vista_ocr import VistaOCR  # noqa: E402
+from vista_ocr.tokenizer.spatial_tokens import SpatialGrid  # noqa: E402
+from vista_ocr.tokenizer.tokenizer import VistaTokenizer  # noqa: E402
+from vista_ocr.training.callbacks import (  # noqa: E402
     CheckpointConfig,
     ValConfig,
     load_checkpoint,
 )
-from vista_ocr.training.losses import combined_loss
-from vista_ocr.training.train_loop import TrainConfig, train
+from vista_ocr.training.train_loop import TrainConfig, train  # noqa: E402
+from vista_ocr.training.val_helpers import (  # noqa: E402
+    make_val_decode_fn,
+    make_val_loss_fn,
+    pdfa_val_batches,
+)
 
 LOG = logging.getLogger("stage3")
-
-
-def _multitask_sample_stream(loader, mix: TaskMix, seed: int = 0):
-    """Wrap a Batch loader so each underlying Sample (one per Batch when
-    micro_bs=1) gets a random task assignment from the mixture."""
-    import random
-    from vista_ocr.data.mixture import relabel_for_task
-    rng = random.Random(seed)
-    for batch in loader:
-        # The DataLoader emits Batches built from a single Sample. We
-        # cannot easily relabel after collate, so for stage-3 we'll feed
-        # iter_pdfa raw + relabel + collate per batch.
-        yield batch
 
 
 def main() -> None:
@@ -71,6 +64,14 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=2000)
     ap.add_argument("--lr", type=float, default=3e-5)
     ap.add_argument("--lambda-text", type=float, default=0.5)
+    ap.add_argument("--min-lr-ratio", type=float, default=0.05,
+                    help="A4: cosine-schedule floor as a fraction of base_lr.")
+    ap.add_argument("--encoder-dropout-max", type=float, default=0.5,
+                    help="B1: peak DANIEL exponential dropout. None disables.")
+    ap.add_argument("--dropout-T", type=float, default=5e4,
+                    help="B1: time-constant of the dropout schedule.")
+    ap.add_argument("--decode-n", type=int, default=5,
+                    help="B3: decode + score CER/WER on first N val batches.")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -98,9 +99,7 @@ def main() -> None:
         "ocr": 0.25, "ocr_layout": 0.25, "region_ocr": 0.25, "find_it": 0.25,
     })
 
-    # We can't easily relabel batches built off-process by DataLoader
-    # workers, so stage-3 streams Samples in-process. Slower than stage-2
-    # but the multitask relabelling needs the raw Sample.
+    # Multitask relabelling needs the raw Sample, so we stream in-process.
     def stage3_stream():
         for shard in args.train_shards:
             cfg_p = PdfaConfig(shards=[str(shard)])
@@ -112,18 +111,7 @@ def main() -> None:
     spatial_ids = tokenizer._spatial_ids
 
     def val_batches_factory():
-        for s in iter_pdfa(PdfaConfig(shards=[str(args.val_shard)])):
-            yield collate([s], tokenizer, pre_cfg)
-
-    def val_loss_fn(model, batch):
-        device = next(model.parameters()).device
-        logits = model(batch.images.to(device), batch.decoder_input_ids.to(device))
-        out = combined_loss(
-            logits=logits, labels=batch.labels.to(device),
-            spatial_token_ids=spatial_ids, lambda_text=args.lambda_text,
-            pad_id=batch.pad_id, prompt_mask=batch.prompt_mask.to(device),
-        )
-        return out.loss
+        return pdfa_val_batches(args.val_shard, tokenizer, pre_cfg)
 
     cfg = TrainConfig(
         base_lr=args.lr, warmup_steps=2000, total_steps=args.steps,
@@ -133,12 +121,20 @@ def main() -> None:
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
         freeze_decoder=False,
         adam_betas=(0.9, 0.98), adam_eps=1e-6, label_smoothing=0.1,
+        # A4
+        min_lr_ratio=args.min_lr_ratio,
+        # B1
+        encoder_dropout_max=args.encoder_dropout_max,
+        dropout_T=args.dropout_T,
         checkpoint=CheckpointConfig(
             out_dir=args.out, save_every=args.ckpt_every, keep_last=3,
         ),
         val=ValConfig(every=args.val_every, max_batches=args.val_batches),
         val_batches_factory=val_batches_factory,
-        val_loss_fn=val_loss_fn,
+        val_loss_fn=make_val_loss_fn(spatial_ids, lambda_text=args.lambda_text),
+        # B3
+        val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
+        val_decode_n=args.decode_n,
     )
 
     LOG.info("Stage-3 multitask pretraining: %d steps, lambda=%.2f, lr=%.2e",

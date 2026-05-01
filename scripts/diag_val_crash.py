@@ -63,9 +63,8 @@ def main() -> None:
         # eval-mode forward, mirrors run_validation
         try:
             model.eval()
-            with torch.no_grad():
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    _ = model(img, tgt)
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                _ = model(img, tgt)
             LOG.info("  -> eval forward ok, peak %.2f GB",
                      torch.cuda.max_memory_allocated() / 1e9)
         except Exception as exc:

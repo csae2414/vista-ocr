@@ -94,7 +94,12 @@ def main() -> None:
     )
 
     from vista_ocr.data.preprocess import (
-        PreprocessConfig as _PreCfg, pad_to_multiple, resize_to_canvas, to_tensor,
+        PreprocessConfig as _PreCfg,
+    )
+    from vista_ocr.data.preprocess import (
+        pad_to_multiple,
+        resize_to_canvas,
+        to_tensor,
     )
 
     n = 0

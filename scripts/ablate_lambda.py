@@ -16,9 +16,7 @@ from pathlib import Path
 
 import torch
 
-from vista_ocr.data.collate import collate
 from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader
-from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
 from vista_ocr.data.preprocess import PreprocessConfig
 from vista_ocr.logging_config import setup_logging
 from vista_ocr.models.decoder import small_random_decoder

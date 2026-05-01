@@ -17,8 +17,10 @@ import torch
 from omegaconf import OmegaConf
 
 from vista_ocr.data.mixture import MixedTaskStream, TaskMix
-from vista_ocr.data.synth.sroie_synth import SroieSynthConfig, generate_sample as gen_sroie
-from vista_ocr.data.synth.synthdog_bbox import SynthDogConfig, generate_sample as gen_synthdog
+from vista_ocr.data.synth.sroie_synth import SroieSynthConfig
+from vista_ocr.data.synth.sroie_synth import generate_sample as gen_sroie
+from vista_ocr.data.synth.synthdog_bbox import SynthDogConfig
+from vista_ocr.data.synth.synthdog_bbox import generate_sample as gen_synthdog
 from vista_ocr.logging_config import setup_logging
 from vista_ocr.models.decoder import MBartDecoder
 from vista_ocr.models.encoder import FCNEncoderWidther

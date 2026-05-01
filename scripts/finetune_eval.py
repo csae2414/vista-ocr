@@ -12,15 +12,13 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import torch
 
-from vista_ocr.data.collate import collate
 from vista_ocr.data.iam import IamConfig, iter_iam
 from vista_ocr.data.maurdor import MaurdorConfig, iter_maurdor
-from vista_ocr.data.preprocess import PreprocessConfig
 from vista_ocr.data.sroie import SroieConfig, iter_sroie
 from vista_ocr.eval.metrics_detection import (
     ap_at_iou_thresholds,
@@ -130,8 +128,6 @@ def main() -> None:
         LOG.info("Loading pretrained weights from %s", args.checkpoint)
         load_checkpoint(args.checkpoint, model=model, optimizer=None,
                         map_location="cuda", strict=False)
-
-    pre_cfg = PreprocessConfig(target_h=args.page_h, target_w=args.page_w, pad_multiple=32)
 
     def train_stream():
         while True:

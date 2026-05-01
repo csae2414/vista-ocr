@@ -6,6 +6,11 @@ Exercises the full long-run plumbing on real PDFA data:
 - Periodic validation on a held-out shard
 - Checkpoint every N steps with auto-resume
 - ckpt_best.pt on val_loss improvement
+- A4 ``min_lr_ratio`` floor on the cosine schedule
+- B3 CER/WER reported on the first ``--decode-n`` val batches
+
+Stage-1 has the decoder frozen, so the encoder is the only learner.
+B1 dropout schedule is intentionally disabled here (see notes).
 
 Usage on the VM::
 
@@ -28,21 +33,23 @@ from pathlib import Path
 # stabilises a subtle transformers 4.44 + RTX 3090 + bf16 path.
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
-import torch
+import torch  # noqa: E402
 
-from vista_ocr.data.collate import collate
-from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader
-from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
-from vista_ocr.data.preprocess import PreprocessConfig
-from vista_ocr.logging_config import setup_logging
-from vista_ocr.models.decoder import small_random_decoder
-from vista_ocr.models.encoder import FCNEncoderWidther
-from vista_ocr.models.vista_ocr import VistaOCR
-from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
-from vista_ocr.tokenizer.tokenizer import VistaTokenizer
-from vista_ocr.training.callbacks import CheckpointConfig, ValConfig
-from vista_ocr.training.losses import combined_loss
-from vista_ocr.training.train_loop import TrainConfig, train
+from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader  # noqa: E402
+from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
+from vista_ocr.logging_config import setup_logging  # noqa: E402
+from vista_ocr.models.decoder import small_random_decoder  # noqa: E402
+from vista_ocr.models.encoder import FCNEncoderWidther  # noqa: E402
+from vista_ocr.models.vista_ocr import VistaOCR  # noqa: E402
+from vista_ocr.tokenizer.spatial_tokens import SpatialGrid  # noqa: E402
+from vista_ocr.tokenizer.tokenizer import VistaTokenizer  # noqa: E402
+from vista_ocr.training.callbacks import CheckpointConfig, ValConfig  # noqa: E402
+from vista_ocr.training.train_loop import TrainConfig, train  # noqa: E402
+from vista_ocr.training.val_helpers import (  # noqa: E402
+    make_val_decode_fn,
+    make_val_loss_fn,
+    pdfa_val_batches,
+)
 
 LOG = logging.getLogger("stage1")
 
@@ -62,6 +69,11 @@ def main() -> None:
     ap.add_argument("--ckpt-every", type=int, default=500)
     ap.add_argument("--keep-last", type=int, default=3)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--min-lr-ratio", type=float, default=0.05,
+                    help="A4: cosine-schedule floor as a fraction of base_lr.")
+    ap.add_argument("--decode-n", type=int, default=5,
+                    help="B3: decode + score CER/WER on first N val batches "
+                         "each val call. 0 disables.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -93,30 +105,7 @@ def main() -> None:
     spatial_ids = tokenizer._spatial_ids
 
     def val_batches_factory():
-        cfg = PdfaConfig(shards=[str(args.val_shard)])
-        for s in iter_pdfa(cfg):
-            yield collate([s], tokenizer, pre_cfg)
-
-    def val_loss_fn(model, batch):
-        # PyTorch issue #132613 + cuBLAS workspace contention: bf16
-        # autocast hits CUBLAS_STATUS_EXECUTION_FAILED in MBart eager
-        # self-attention specifically in eval mode + no_grad + autocast.
-        # Diagnosed empirically and matches the failure mode reported in
-        # the PyTorch issue. Workaround: run val in fp32 (no autocast).
-        # Val is infrequent so the slower-but-stable path is fine.
-        device = next(model.parameters()).device
-        logits = model(
-            batch.images.to(device), batch.decoder_input_ids.to(device),
-        )
-        out = combined_loss(
-            logits=logits,
-            labels=batch.labels.to(device),
-            spatial_token_ids=spatial_ids,
-            lambda_text=1.0,
-            pad_id=batch.pad_id,
-            prompt_mask=batch.prompt_mask.to(device),
-        )
-        return out.loss
+        return pdfa_val_batches(args.val_shard, tokenizer, pre_cfg)
 
     train_cfg = TrainConfig(
         base_lr=args.lr, warmup_steps=50, total_steps=args.steps,
@@ -125,12 +114,21 @@ def main() -> None:
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
         freeze_decoder=True, adam_betas=(0.9, 0.98), adam_eps=1e-6,
         label_smoothing=0.1,
+        # A4: keep a small LR through the cosine tail.
+        min_lr_ratio=args.min_lr_ratio,
+        # B1: stage-1 has the decoder frozen, so the encoder is the only
+        # learner -- starting at p=0 (the schedule) risks early overfit.
+        # Notes-spec keeps dropout fixed for stage-1.
+        encoder_dropout_max=None,
         checkpoint=CheckpointConfig(
             out_dir=args.out, save_every=args.ckpt_every, keep_last=args.keep_last,
         ),
         val=ValConfig(every=args.val_every, max_batches=args.val_batches),
         val_batches_factory=val_batches_factory,
-        val_loss_fn=val_loss_fn,
+        val_loss_fn=make_val_loss_fn(spatial_ids, lambda_text=1.0),
+        # B3: diagnostic decode + CER/WER. Disabled when --decode-n=0.
+        val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
+        val_decode_n=args.decode_n,
     )
 
     t0 = time.perf_counter()

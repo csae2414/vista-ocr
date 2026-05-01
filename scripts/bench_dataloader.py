@@ -149,8 +149,8 @@ def main() -> None:
             match = "(baseline)"
         else:
             n = min(len(base_losses), len(losses))
-            max_diff = max(abs(a - b) for a, b in zip(base_losses[:n], losses[:n])) if n else float("nan")
-            mean_diff = sum(abs(a - b) for a, b in zip(base_losses[:n], losses[:n])) / max(1, n)
+            max_diff = max(abs(a - b) for a, b in zip(base_losses[:n], losses[:n], strict=False)) if n else float("nan")
+            mean_diff = sum(abs(a - b) for a, b in zip(base_losses[:n], losses[:n], strict=False)) / max(1, n)
             match = f"max|diff|={max_diff:.4f}  mean|diff|={mean_diff:.4f}"
         LOG.info("workers=%-3d %.1fs  speedup=%.2fx  %s",
                  nw, elapsed, speedup, match)

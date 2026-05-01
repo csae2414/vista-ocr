@@ -70,7 +70,7 @@ def main() -> None:
     )
     model = VistaOCR(encoder, decoder)
     state = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(state["model"] if "model" in state else state)
+    model.load_state_dict(state.get("model", state))
 
     device = "cpu" if args.cpu or not torch.cuda.is_available() else "cuda"
     model.to(device).eval()
