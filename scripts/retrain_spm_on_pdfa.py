@@ -34,13 +34,12 @@ The output is a SentencePiece ``.model`` + ``.vocab`` file. Use it via::
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
-import tarfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
+from vista_ocr.data.pdfa_shard import PdfaShardReader
 from vista_ocr.logging_config import setup_logging
 from vista_ocr.tokenizer.build_spm import train_spm
 from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
@@ -67,28 +66,11 @@ def is_useful_line(text: str, min_chars: int = 3, min_alpha_frac: float = 0.5) -
 def iter_lines_from_shard(shard: Path) -> Iterator[str]:
     """Stream every ``pages[].lines.text`` entry out of a PDFA shard.
 
-    Reads the tar without depending on webdataset; each json is parsed
-    independently so a malformed entry is skipped, not fatal.
+    Thin compatibility wrapper around :class:`PdfaShardReader`. Kept
+    so existing ``from retrain_spm_on_pdfa import iter_lines_from_shard``
+    imports (used by tests) continue to work.
     """
-    if not shard.exists():
-        raise FileNotFoundError(shard)
-    with tarfile.open(shard, "r") as tar:
-        for member in tar:
-            if not member.name.endswith(".json"):
-                continue
-            f = tar.extractfile(member)
-            if f is None:
-                continue
-            try:
-                payload = json.loads(f.read().decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                LOG.warning("skip malformed json %s: %s", member.name, exc)
-                continue
-            for page in payload.get("pages", []):
-                lines = page.get("lines") or {}
-                for text in lines.get("text", []):
-                    if isinstance(text, str):
-                        yield text
+    yield from PdfaShardReader([shard]).iter_line_texts()
 
 
 def write_corpus(

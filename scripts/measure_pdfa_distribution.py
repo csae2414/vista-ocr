@@ -20,30 +20,11 @@ Examples::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import tarfile
-from collections.abc import Iterator
 from pathlib import Path
 
+from vista_ocr.data.pdfa_shard import PdfaShardReader
 from vista_ocr.logging_config import setup_logging
-
-
-def _iter_pages(shard: Path) -> Iterator[dict]:
-    if not shard.exists():
-        raise FileNotFoundError(shard)
-    with tarfile.open(shard, "r") as tar:
-        for member in tar:
-            if not member.name.endswith(".json"):
-                continue
-            f = tar.extractfile(member)
-            if f is None:
-                continue
-            try:
-                payload = json.loads(f.read().decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            yield from payload.get("pages", [])
 
 
 def _percentile(sorted_vals: list[int], q: float) -> int:
@@ -65,7 +46,7 @@ def main() -> None:
     words_per_page: list[int] = []
     for shard in args.shards:
         print(f"reading {shard}", file=sys.stderr)
-        for page in _iter_pages(shard):
+        for page in PdfaShardReader([shard]).iter_pages():
             block = page.get("lines") or {}
             texts = block.get("text") or []
             lines_per_page.append(len(texts))
