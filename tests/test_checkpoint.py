@@ -97,6 +97,22 @@ def test_run_validation_handles_empty_iterator():
     assert out["n_batches"] == 0
 
 
+def test_load_checkpoint_with_non_cpu_map_location(tmp_path: Path, model_and_optim):
+    """Regression test for the resume crash: map_location="cuda" moves the
+    RNG ByteTensor off CPU; torch.set_rng_state then rejects it. The
+    loader must move RNG tensors back to CPU."""
+    m, o = model_and_optim
+    p = tmp_path / "ckpt_00000003.pt"
+    save_checkpoint(p, step=3, model=m, optimizer=o)
+
+    m2 = _Tiny()
+    o2 = torch.optim.AdamW(m2.parameters(), lr=1e-3)
+    # Use a non-cpu map_location string. Even on a CPU box this exercises
+    # the .cpu().to(uint8) path because torch.load happily accepts it.
+    payload = load_checkpoint(p, model=m2, optimizer=o2, map_location="cpu")
+    assert payload.step == 3
+
+
 def test_resume_restores_optimizer_state_and_step(tmp_path: Path, model_and_optim):
     m, o = model_and_optim
     # Take a step so optimizer has non-trivial state.

@@ -86,9 +86,16 @@ def load_checkpoint(
     if optimizer is not None and "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
     if restore_rng:
-        torch.set_rng_state(payload["rng_cpu"])
+        # ``map_location`` may have moved the RNG tensors onto CUDA. Both
+        # ``torch.set_rng_state`` and ``torch.cuda.set_rng_state_all``
+        # require CPU ByteTensors, so we force them back here.
+        cpu_state = payload["rng_cpu"].cpu().to(torch.uint8)
+        torch.set_rng_state(cpu_state)
         if torch.cuda.is_available() and payload.get("rng_cuda"):
-            torch.cuda.set_rng_state_all(payload["rng_cuda"])
+            cuda_states = [
+                t.cpu().to(torch.uint8) for t in payload["rng_cuda"]
+            ]
+            torch.cuda.set_rng_state_all(cuda_states)
     LOG.info("Checkpoint loaded: %s (resumed from step %d)", path, payload["step"])
     return CheckpointPayload(
         step=int(payload["step"]),
