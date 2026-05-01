@@ -62,8 +62,15 @@ def main() -> None:
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--steps", type=int, default=2000)
-    ap.add_argument("--page-h", type=int, default=1100)
-    ap.add_argument("--page-w", type=int, default=850)
+    ap.add_argument("--page-h", type=int, default=None,
+                    help="Page canvas height in px. Overrides --page-preset.")
+    ap.add_argument("--page-w", type=int, default=None,
+                    help="Page canvas width in px. Overrides --page-preset.")
+    ap.add_argument("--page-preset", default="medium",
+                    choices=("tiny", "small", "medium", "large", "auto"),
+                    help="Page resolution preset (default medium = 1100x850, "
+                         "fits a 24 GB 3090). 'auto' queries CUDA VRAM. "
+                         "Ignored when --page-h/--page-w are set explicitly.")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--val-every", type=int, default=500)
     ap.add_argument("--val-batches", type=int, default=20)
@@ -78,11 +85,25 @@ def main() -> None:
     ap.add_argument("--augment", action="store_true",
                     help="B2: enable train-time bbox-aware augmentation "
                          "(rotation, brightness/contrast, blur, JPEG).")
+    ap.add_argument("--sdpa", action="store_true",
+                    help="C3: monkey-patch MBartAttention to use SDPA. "
+                         "Runs the ship-gate first; aborts on failure.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
     setup_logging(level="INFO", log_file=args.out / "stage1.log")
+
+    from vista_ocr.training.resolution import resolve as resolve_resolution
+    if args.page_h is None or args.page_w is None:
+        res = resolve_resolution(args.page_preset)
+        args.page_h = args.page_h or res.height
+        args.page_w = args.page_w or res.width
+    LOG.info("Page canvas: %d x %d", args.page_h, args.page_w)
+
+    if args.sdpa:
+        from vista_ocr.models.sdpa_patch import enable_with_ship_gate
+        enable_with_ship_gate(manifest_dir=args.out)
 
     torch.manual_seed(args.seed)
     grid = SpatialGrid(canvas_h=3508, canvas_w=2480, quantizer_px=10, scheme="original")
