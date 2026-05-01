@@ -26,11 +26,22 @@ from typing import Callable
 import torch
 from torch import nn
 
+from pathlib import Path
+
 from vista_ocr.data.collate import Batch, collate
 from vista_ocr.data.preprocess import PreprocessConfig
 from vista_ocr.data.types import Sample
 from vista_ocr.models.vista_ocr import VistaOCR
 from vista_ocr.tokenizer.tokenizer import VistaTokenizer
+from vista_ocr.training.callbacks import (
+    CheckpointConfig,
+    ValConfig,
+    find_latest_checkpoint,
+    load_checkpoint,
+    prune_old_checkpoints,
+    run_validation,
+    save_checkpoint,
+)
 from vista_ocr.training.losses import combined_loss
 from vista_ocr.training.schedules import linear_warmup_cosine
 
@@ -62,6 +73,13 @@ class TrainConfig:
     gradient_checkpointing: bool = False
     autocast_dtype: torch.dtype | None = None     # set to torch.bfloat16 on A100
     compile_model: bool = False                    # torch.compile encoder+decoder
+    # Persistence + validation. Disabled by default so the existing tests
+    # still see a no-side-effect train(...).
+    checkpoint: CheckpointConfig | None = None
+    val: ValConfig | None = None
+    val_batches_factory: object | None = None     # callable -> Iterable[Batch]
+    val_loss_fn: object | None = None             # callable(model, batch) -> Tensor
+    resume_from: Path | None = None               # explicit path to a ckpt_*.pt
 
 
 @dataclass
@@ -158,6 +176,23 @@ def train(
     accum = 0
     optimizer.zero_grad(set_to_none=True)
     step = 0
+    best_val_loss = float("inf")
+
+    # Resume from checkpoint if requested or auto-discover the latest in
+    # the configured checkpoint directory.
+    resume_path: Path | None = cfg.resume_from
+    if resume_path is None and cfg.checkpoint is not None:
+        latest = find_latest_checkpoint(cfg.checkpoint.out_dir)
+        if latest is not None:
+            resume_path = latest
+    if resume_path is not None:
+        payload = load_checkpoint(
+            resume_path, model=model, optimizer=optimizer, map_location=device
+        )
+        step = payload.step
+        best_val_loss = payload.best_val_loss
+        LOG.info("Resumed from %s at step %d (best_val_loss=%.4f)",
+                 resume_path, step, best_val_loss)
 
     micro_iter = _iter_batches(
         sample_stream, tokenizer, pre_cfg, cfg.micro_batch_size
@@ -238,6 +273,41 @@ def train(
                 "step=%d loss=%.4f text=%.4f loc=%.4f lr=%.2e",
                 step, stats.loss, stats.loss_text, stats.loss_loc, lr,
             )
+
+        # Periodic validation
+        if (
+            cfg.val is not None
+            and cfg.val_batches_factory is not None
+            and cfg.val_loss_fn is not None
+            and step > 0
+            and step % cfg.val.every == 0
+        ):
+            val_batches = cfg.val_batches_factory()
+            val_stats = run_validation(
+                model, val_batches, cfg.val_loss_fn, max_batches=cfg.val.max_batches,
+            )
+            LOG.info("validation step=%d val_loss=%.4f n=%d (%.1fs)",
+                     step, val_stats["val_loss"], val_stats["n_batches"],
+                     val_stats["elapsed_s"])
+            if cfg.checkpoint and cfg.checkpoint.save_best and \
+                    val_stats["val_loss"] < best_val_loss:
+                best_val_loss = val_stats["val_loss"]
+                save_checkpoint(
+                    cfg.checkpoint.out_dir / "ckpt_best.pt",
+                    step=step, model=model, optimizer=optimizer,
+                    best_val_loss=best_val_loss,
+                    extra={"val_loss": val_stats["val_loss"]},
+                )
+
+        # Periodic checkpoint
+        if cfg.checkpoint is not None and step > 0 and step % cfg.checkpoint.save_every == 0:
+            save_checkpoint(
+                cfg.checkpoint.out_dir / f"ckpt_{step:08d}.pt",
+                step=step, model=model, optimizer=optimizer,
+                best_val_loss=best_val_loss,
+            )
+            prune_old_checkpoints(cfg.checkpoint.out_dir, cfg.checkpoint.keep_last)
+
         step += 1
 
     return history
