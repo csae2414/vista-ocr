@@ -39,6 +39,7 @@ def test_decoder_greedy_generation_terminates(tiny_decoder: MBartDecoder):
         prompt_ids=prompt,
         encoder_hidden_states=memory,
         eos_id=0,
+        pad_id=1,                 # must differ from eos_id
         max_new_tokens=8,
     )
     assert out.shape[0] == 1
@@ -58,6 +59,17 @@ def test_vista_ocr_end_to_end():
     decoder_input_ids = torch.randint(0, 128, (1, 5))
     logits = model(images, decoder_input_ids)
     assert logits.shape == (1, 5, 128)
+
+
+def test_generate_rejects_pad_eq_eos(tiny_decoder: MBartDecoder):
+    """HuggingFace generate() needs pad != eos to avoid stopping at step 1."""
+    prompt = torch.randint(0, tiny_decoder.vocab_size, (1, 2))
+    memory = torch.randn(1, 4, tiny_decoder.d_model)
+    with pytest.raises(ValueError, match="pad_id"):
+        tiny_decoder.generate_greedy(
+            prompt_ids=prompt, encoder_hidden_states=memory,
+            eos_id=3, pad_id=3, max_new_tokens=4,
+        )
 
 
 def test_freeze_decoder_flag():

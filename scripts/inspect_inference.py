@@ -77,6 +77,10 @@ def main() -> None:
         pad_multiple=32, device="cuda",
     )
 
+    from vista_ocr.data.preprocess import (
+        PreprocessConfig as _PreCfg, pad_to_multiple, resize_to_canvas, to_tensor,
+    )
+
     n = 0
     for sample in iter_pdfa(PdfaConfig(shards=[str(args.shard)])):
         n += 1
@@ -94,12 +98,30 @@ def main() -> None:
             continue
         pred_text = " | ".join(ln.text for ln in pred_lines[:8])
 
+        # Always also dump the raw token sequence so we can spot
+        # malformed output even when parse_original_output finds no boxes.
+        pre_cfg = _PreCfg(target_h=args.page_h, target_w=args.page_w, pad_multiple=32)
+        img, _, _ = resize_to_canvas(sample.image, pre_cfg)
+        img, _ = pad_to_multiple(img, 32)
+        img_t = to_tensor(img).cuda()
+        prompt_ids = [tokenizer.bos_id, *tokenizer.build_ocr_prompt(with_layout=True)]
+        prompt_t = torch.tensor([prompt_ids], dtype=torch.long, device="cuda")
+        raw = model.generate(
+            images=img_t, prompt_ids=prompt_t,
+            eos_id=tokenizer.eos_id, max_new_tokens=64,
+            pad_id=tokenizer.pad_id,
+        )[0].tolist()
+        raw_pieces = [tokenizer.id_to_piece(i) for i in raw[:32]]
+        spatial_count = sum(1 for i in raw if tokenizer.is_spatial_id(i))
+
         print(f"\n=== page {n} ({sample.source}) ===")
         print(f"  size       : {sample.image.size}")
         print(f"  GT lines   : {gt_count}")
         print(f"  Pred lines : {len(pred_lines)}")
         print(f"  GT (first 8 lines):\n    {gt_text[:300]}")
         print(f"  Pred (first 8 lines):\n    {pred_text[:300]}")
+        print(f"  Raw tokens (first 32 of {len(raw)}, spatial={spatial_count}):")
+        print(f"    {raw_pieces}")
 
         if pred_lines:
             print(f"  First predicted bbox: {pred_lines[0].bbox}")

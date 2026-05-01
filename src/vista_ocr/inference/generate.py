@@ -54,6 +54,7 @@ def _generate(
         prompt_ids=prompt,
         eos_id=tokenizer.eos_id,
         max_new_tokens=cfg.max_new_tokens,
+        pad_id=tokenizer.pad_id,
     )
     return out[0].tolist()
 

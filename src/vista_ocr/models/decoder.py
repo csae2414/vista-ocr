@@ -149,22 +149,37 @@ class MBartDecoder(nn.Module):
         max_new_tokens: int = 512,
         encoder_attention_mask: Tensor | None = None,
         num_beams: int = 1,
+        pad_id: int | None = None,
     ) -> Tensor:
         """KV-cache-backed generation via HuggingFace ``generate``.
 
         Replaces the earlier O(T^2) hand-rolled loop -- on real eval-length
         sequences (max_new_tokens=4096) this is a 10-50x speedup. Set
-        ``num_beams > 1`` for beam search."""
+        ``num_beams > 1`` for beam search.
+
+        ``pad_id`` MUST differ from ``eos_id``; otherwise HuggingFace's
+        ``generate`` cannot distinguish padding from end-of-sequence and
+        stops at step 1. Defaults to ``0`` if not provided.
+        """
+        if pad_id is None:
+            pad_id = 0
+        if pad_id == eos_id:
+            raise ValueError(
+                f"pad_id ({pad_id}) must differ from eos_id ({eos_id}); "
+                "passing the same id makes HF generate() stop immediately."
+            )
         prompt_len = prompt_ids.shape[1]
+        attention_mask = torch.ones_like(prompt_ids)
         out = self.model.generate(
             input_ids=prompt_ids,
+            attention_mask=attention_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             num_beams=num_beams,
             eos_token_id=eos_id,
-            pad_token_id=eos_id,
+            pad_token_id=pad_id,
             use_cache=True,
         )
         return out[:, prompt_len:]
