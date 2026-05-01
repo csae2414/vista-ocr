@@ -6,8 +6,9 @@ end OCR models*, [arXiv:2504.03621](https://arxiv.org/abs/2504.03621),
 April 2025).
 
 No official code has been released by the authors. This repository follows
-the paper as faithfully as possible, with every engineering decision
-documented in [`PLAN.md`](PLAN.md) and [`PLAN_VM.md`](PLAN_VM.md).
+the paper as faithfully as possible, with each gap (hyperparameters the
+paper does not specify) backed by sister-model evidence noted in commit
+messages and module docstrings.
 
 > **Status.** Architecture and full training pipeline implemented and
 > verified end-to-end on a single RTX 3090. Stage-1 calibration runs on
@@ -188,8 +189,6 @@ All stages share:
 
 ```
 vista-ocr/
-├── PLAN.md              ┐ Implementation plan + paper-faithfulness audit
-├── PLAN_VM.md           ┘ + GPU-VM-specific notes (HP, speed, decisions)
 ├── configs/             YAML configs (base + per-stage + per-finetune)
 ├── docs/                Sphinx API docs (run: cd docs && make html)
 ├── scripts/
@@ -240,13 +239,14 @@ The paper does **not** specify:
 - λ in the loss → 0.5 default with {0.3, 0.5, 0.7} ablation
 - LR, warmup, schedule, total steps, weight decay, gradient clipping
   → all defaults sourced from sister models (TrOCR, Donut, mBART) and
-  documented in `PLAN_VM.md` "Hyperparameter starting points"
+  documented inline in `configs/base.yaml` and the relevant module
+  docstrings
 - Data augmentations beyond Appendix 0.A.4 → implemented per appendix
   for synth-SROIE, default minimal for others
 
-`PLAN.md` §12.5 lists every gap with our default and a faithfulness
-score; `PLAN_VM.md` extends with empirical findings (decoder A/B,
-λ sweep, speed knob outcomes) from the GPU.
+Empirical findings (decoder A/B between mBART-12 and Donut-4, λ sweep,
+speed-knob outcomes) live in the commit history and the relevant
+ablation scripts under `scripts/`.
 
 ## Reproducibility checklist
 
@@ -273,10 +273,13 @@ score; `PLAN_VM.md` extends with empirical findings (decoder A/B,
 - We trained on a single **RTX 3090 (24 GB)**, not the paper's A100 80GB.
   Mandatory consequences: gradient checkpointing always on, micro-batch
   =1 at full page resolution, ~3-4× slower wall-clock vs A100.
-- All speed and reliability findings (working and not) are recorded in
-  `PLAN_VM.md`. Notable: bf16 autocast in eval mode hits PyTorch
-  [#132613](https://github.com/pytorch/pytorch/issues/132613); we run
-  validation in fp32 as a workaround.
+- bf16 autocast in eval mode hits PyTorch
+  [#132613](https://github.com/pytorch/pytorch/issues/132613) on the
+  MBart eager attention path; we run validation in fp32 as a workaround.
+- `MBartForCausalLM` SDPA / FlashAttention-2 is unsupported in
+  `transformers==4.44.2`
+  ([HF #28005](https://github.com/huggingface/transformers/issues/28005));
+  documented but not blocking.
 
 ## References
 

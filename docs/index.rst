@@ -3,8 +3,8 @@ vista-ocr
 
 A from-scratch reimplementation of **VISTA-OCR** (Hamdi, Tamasna, Boisson,
 Paquet, *VISTA-OCR: Towards generative and interactive end to end OCR
-models*, arXiv:2504.03621). See ``PLAN.md`` for the design and faithfulness
-audit.
+models*, arXiv:2504.03621). See the README for design notes and the
+paper-faithfulness audit.
 
 .. toctree::
    :maxdepth: 2

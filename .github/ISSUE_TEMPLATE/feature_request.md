@@ -13,5 +13,5 @@ labels: enhancement
 **Paper / sister-model evidence**
 
 Quote the relevant paper section or sister-model recipe. PRs that
-disagree with the documented sources in `PLAN_VM.md` need empirical
-evidence on the same hardware.
+change `configs/base.yaml` defaults need empirical evidence from a real
+GPU run.

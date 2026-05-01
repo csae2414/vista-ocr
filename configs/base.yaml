@@ -1,5 +1,6 @@
 # VISTA-OCR base config. All other configs override fields from here.
-# Defaults reflect the paper where stated, and PLAN.md §12.6 where not.
+# Defaults reflect the paper where stated, and sister-model recipes
+# (TrOCR, Donut, mBART, DANIEL) where the paper is silent.
 
 model:
   encoder:

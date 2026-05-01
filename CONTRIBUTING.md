@@ -20,7 +20,8 @@ You should see **101 tests passing** before you change anything.
 - **Faithfulness improvements.** If a paper detail is incorrectly
   modelled, point at the paper section and propose the fix.
 - **Speed wins.** PRs that make `bench_dataloader.py` faster are
-  welcome. Document the win in `PLAN_VM.md`.
+  welcome. Document the win in the commit message with reproducible
+  numbers.
 - **Dataset coverage.** Loaders for new public OCR datasets in the same
   shape as `vista_ocr.data.iam` / `sroie` / `maurdor`.
 - **Bugfixes** with regression tests.
@@ -33,9 +34,8 @@ You should see **101 tests passing** before you change anything.
 - Renames or stylistic refactors with no behavioural change.
 - New optional dependencies without a clear win documented in the
   benchmark script.
-- Changes to defaults that disagree with the documented sources in
-  `PLAN_VM.md` "Hyperparameter starting points" without empirical
-  evidence on the same hardware.
+- Changes to defaults in `configs/base.yaml` without empirical evidence
+  on a real GPU run.
 
 ## Conventions
 
