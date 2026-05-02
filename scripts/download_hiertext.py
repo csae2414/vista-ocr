@@ -1,14 +1,17 @@
 """Download the HierText dataset from HuggingFace.
 
-HierText is ~12 GB total (train + validation + test). The HuggingFace
-``datasets`` library handles the actual download and caching. We just
-materialise the splits into a known location so the loader can read
-them without re-downloading.
+The canonical Google-Research HierText repo is not hosted on the
+HuggingFace Hub, so this script defaults to the working community
+mirror ``Berzerker/ocr_hiertext`` which carries pre-rendered page
+images plus a derivative annotation field (``output_json_dumpsed``).
+The dataset weighs ~1.6 GB train (single parquet).
+
+Override ``--repo`` if you have a private mirror that exposes the
+canonical schema.
 
 Examples::
 
-    # Download all three splits into the default HF cache + a local
-    # snapshot at data/raw/hiertext/.
+    # Download the default mirror into data/raw/hiertext/.
     python scripts/download_hiertext.py
 
     # Just the train split.
@@ -27,9 +30,12 @@ def main() -> None:
     ap.add_argument("--cache-dir", type=Path, default=Path("data/raw/hiertext"),
                     help="Local cache directory. Same value goes into HierTextConfig.")
     ap.add_argument("--splits", nargs="+",
-                    default=["train", "validation", "test"],
-                    choices=["train", "validation", "test"])
-    ap.add_argument("--repo", default="google-research-datasets/hiertext")
+                    default=["train"],
+                    choices=["train", "validation", "test"],
+                    help="Splits to materialise. The default mirror only "
+                         "carries 'train'; pass 'validation'/'test' only "
+                         "with a --repo that has them.")
+    ap.add_argument("--repo", default="Berzerker/ocr_hiertext")
     args = ap.parse_args()
 
     try:
