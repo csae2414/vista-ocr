@@ -88,6 +88,16 @@ def main() -> None:
     ap.add_argument("--sdpa", action="store_true",
                     help="C3: monkey-patch MBartAttention to use SDPA. "
                          "Runs the ship-gate first; aborts on failure.")
+    ap.add_argument("--init-decoder-from", default="random",
+                    choices=("random", "donut"),
+                    help="Decoder weight initialisation. 'random' is the "
+                         "from-scratch default; 'donut' loads "
+                         "naver-clova-ix/donut-base body weights (paper "
+                         "Section 3.2; see vista_ocr.models.donut_init).")
+    ap.add_argument("--grad-accum-steps", type=int, default=1,
+                    help="Effective batch = micro_batch * accum. Paper "
+                         "uses ~11 on A100-80GB; raise to 8 on a 24 GB "
+                         "3090 for paper-comparable gradient signal.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -114,6 +124,9 @@ def main() -> None:
         vocab_size=tokenizer.vocab_size, d_model=1024, n_layers=4, n_heads=16,
         ffn_dim=4096, max_position_embeddings=4096,
     )
+    if args.init_decoder_from == "donut":
+        from vista_ocr.models.donut_init import init_decoder_from_donut
+        init_decoder_from_donut(decoder)
     model = VistaOCR(encoder=encoder, decoder=decoder)
     LOG.info("Total params: %.1fM", sum(p.numel() for p in model.parameters()) / 1e6)
 
@@ -140,7 +153,7 @@ def main() -> None:
 
     train_cfg = TrainConfig(
         base_lr=args.lr, warmup_steps=50, total_steps=args.steps,
-        micro_batch_size=1, grad_accum_steps=1, log_every=100,
+        micro_batch_size=1, grad_accum_steps=args.grad_accum_steps, log_every=100,
         lambda_text=1.0, target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
         freeze_decoder=True, adam_betas=(0.9, 0.98), adam_eps=1e-6,

@@ -53,6 +53,10 @@ messages and module docstrings.
   medium, large, auto}` on the stage scripts; `auto` queries CUDA
   VRAM and picks a sensible canvas (medium = 1100×850 fits the 24 GB
   3090).
+- **Decoder initialisation from Donut** (`--init-decoder-from donut`)
+  per VISTA-OCR §3.2. Loads the BART text-decoder body from
+  `naver-clova-ix/donut-base`; vocab-shaped tensors are skipped
+  (different tokenizer) and re-trained from random init.
 - **242 unit tests**, Sphinx API docs, MIT licensed.
 
 ## Quick start

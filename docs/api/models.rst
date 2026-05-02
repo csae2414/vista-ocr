@@ -7,6 +7,11 @@ Models
 
 .. automodule:: vista_ocr.models.vista_ocr
 
+Decoder initialisation from Donut
+---------------------------------
+
+.. automodule:: vista_ocr.models.donut_init
+
 Optional SDPA monkey-patch
 --------------------------
 
