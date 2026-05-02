@@ -24,6 +24,12 @@ class CheckpointConfig:
     save_every: int = 5000
     keep_last: int = 3
     save_best: bool = True
+    # When True, also write ``ckpt_final.pt`` at the end of the training
+    # loop alongside ``ckpt_best.pt``. ``ckpt_best.pt`` is val-loss-
+    # selected (which we have evidence can be misleading); the final
+    # ckpt captures whatever state training ended at, which downstream
+    # evals may want for sanity checks.
+    save_final: bool = True
 
 
 @dataclass

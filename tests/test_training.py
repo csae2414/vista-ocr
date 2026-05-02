@@ -106,6 +106,76 @@ def tiny_model(tokenizer: VistaTokenizer) -> VistaOCR:
     return VistaOCR(encoder=enc, decoder=dec)
 
 
+def test_grad_accum_gates_optimizer_step(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer,
+):
+    """Phase 2: with grad_accum_steps=N, parameters update once every
+    N forward passes. Catches a regression where accum collapses to 1."""
+    import copy
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=12,
+        micro_batch_size=1, grad_accum_steps=4,
+        target_h=128, target_w=128, pad_multiple=32,
+    )
+    # Two clones so we measure the same starting state independently.
+    model_3 = copy.deepcopy(tiny_model)
+    model_4 = copy.deepcopy(tiny_model)
+    init_params = next(tiny_model.parameters()).detach().clone()
+
+    # 3 forwards with accum=4 -> not enough for an optimizer step.
+    train(model_3, [sample] * 3, tokenizer, cfg, max_steps=3)
+    after_three = next(model_3.parameters()).detach()
+    assert torch.equal(init_params, after_three), (
+        "Parameters changed before grad_accum_steps were accumulated"
+    )
+
+    # 4 forwards with accum=4 -> exactly one optimizer step.
+    train(model_4, [sample] * 4, tokenizer, cfg, max_steps=4)
+    after_four = next(model_4.parameters()).detach()
+    assert not torch.equal(init_params, after_four), (
+        "Parameters did not update after the full accumulation window"
+    )
+
+
+def test_save_final_writes_ckpt_final_at_end_of_training(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    """Phase 1.6: with save_final=True (default), ckpt_final.pt is
+    written at the end of training in addition to any ckpt_best.pt /
+    periodic ckpts. The final ckpt captures the last-step state, not
+    val-loss-selected; downstream evals may want both."""
+    from vista_ocr.training.callbacks import CheckpointConfig
+
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=1, total_steps=4,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(out_dir=tmp_path, save_every=999, keep_last=3),
+    )
+    train(tiny_model, [sample] * 3, tokenizer, cfg, max_steps=3)
+    assert (tmp_path / "ckpt_final.pt").exists()
+
+
+def test_save_final_can_be_disabled(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    from vista_ocr.training.callbacks import CheckpointConfig
+
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=1, total_steps=4,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=tmp_path, save_every=999, keep_last=3, save_final=False,
+        ),
+    )
+    train(tiny_model, [sample] * 3, tokenizer, cfg, max_steps=3)
+    assert not (tmp_path / "ckpt_final.pt").exists()
+
+
 def test_one_optim_step_runs(tiny_model: VistaOCR, tokenizer: VistaTokenizer):
     sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
     cfg = TrainConfig(

@@ -379,4 +379,16 @@ def train(
 
         step += 1
 
+    # End-of-loop: save ckpt_final.pt alongside ckpt_best.pt. Final
+    # captures the last training step's state -- not val-loss-selected,
+    # so downstream evals can compare both. ckpt_best may be earlier
+    # if val_loss is a misleading signal for the run.
+    if cfg.checkpoint is not None and getattr(cfg.checkpoint, "save_final", True):
+        save_checkpoint(
+            cfg.checkpoint.out_dir / "ckpt_final.pt",
+            step=step, model=model, optimizer=optimizer,
+            best_val_loss=best_val_loss,
+            extra={"reason": "end_of_training"},
+        )
+
     return history
