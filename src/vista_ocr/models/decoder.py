@@ -185,24 +185,124 @@ class MBartDecoder(nn.Module):
                 f"pad_id ({pad_id}) must differ from eos_id ({eos_id}); "
                 "passing the same id makes HF generate() stop immediately."
             )
-        prompt_len = prompt_ids.shape[1]
-        attention_mask = torch.ones_like(prompt_ids)
-        out = self.model.generate(
-            input_ids=prompt_ids,
-            attention_mask=attention_mask,
+        if num_beams != 1:
+            raise NotImplementedError(
+                "Hand-rolled greedy loop only supports num_beams=1. "
+                "Beam search needs a separate implementation that also "
+                "threads encoder_hidden_states through the per-step inputs.",
+            )
+        # WHY this loop instead of HF generate(): MBartForCausalLM's
+        # ``prepare_inputs_for_generation`` strips
+        # ``encoder_hidden_states`` from the per-step model inputs, so
+        # cross-attention sees nothing during HF's generation loop and
+        # the decoder produces image-blind output (identical tokens for
+        # different images). We sidestep that by calling ``forward``
+        # directly each step with encoder_hidden_states explicitly
+        # passed; KV cache is still used so this stays O(T) per step.
+        return _greedy_decode_with_cross_attention(
+            model=self.model,
+            prompt_ids=prompt_ids,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
+            eos_id=eos_id,
+            pad_id=pad_id,
             max_new_tokens=max_new_tokens,
             min_new_tokens=min_new_tokens,
-            do_sample=False,
-            num_beams=num_beams,
-            eos_token_id=eos_id,
-            pad_token_id=pad_id,
             repetition_penalty=repetition_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
-            use_cache=True,
         )
-        return out[:, prompt_len:]
+
+
+def _greedy_decode_with_cross_attention(
+    *,
+    model: MBartForCausalLM,
+    prompt_ids: Tensor,
+    encoder_hidden_states: Tensor,
+    encoder_attention_mask: Tensor | None,
+    eos_id: int,
+    pad_id: int,
+    max_new_tokens: int,
+    min_new_tokens: int,
+    repetition_penalty: float,
+    no_repeat_ngram_size: int,
+) -> Tensor:
+    """Greedy decoding that calls ``model.forward`` directly each step.
+
+    Bypasses HF ``generate``'s ``prepare_inputs_for_generation`` (which
+    drops ``encoder_hidden_states`` for ``MBartForCausalLM``). Threads
+    the encoder features into the very first step so cross-attention
+    KV is built correctly; subsequent steps reuse the cached cross-KV.
+
+    Supports ``repetition_penalty`` (HF semantics: divide-on-positive,
+    multiply-on-negative) and ``no_repeat_ngram_size`` (forbid any
+    n-gram already present in the running output). Both are applied
+    pre-argmax. ``min_new_tokens`` masks EOS to ``-inf`` until the
+    threshold is reached.
+    """
+    bsz, prompt_len = prompt_ids.shape
+    device = prompt_ids.device
+    generated: list[Tensor] = [prompt_ids]
+    finished = torch.zeros(bsz, dtype=torch.bool, device=device)
+    past_key_values = None
+
+    for step in range(max_new_tokens):
+        if step == 0:
+            input_ids = prompt_ids
+        else:
+            input_ids = generated[-1][:, -1:]
+
+        kwargs = dict(
+            input_ids=input_ids,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+            return_dict=True,
+        )
+        out = model(**kwargs)
+        logits = out.logits[:, -1, :]   # (B, V)
+        past_key_values = out.past_key_values
+
+        # Repetition penalty (HF semantics).
+        if repetition_penalty != 1.0:
+            full = torch.cat(generated, dim=1)
+            score = logits.gather(1, full)
+            score = torch.where(score < 0, score * repetition_penalty,
+                                score / repetition_penalty)
+            logits.scatter_(1, full, score)
+
+        # n-gram blocking.
+        if no_repeat_ngram_size > 0:
+            full = torch.cat(generated, dim=1).tolist()
+            for b in range(bsz):
+                seq = full[b]
+                if len(seq) >= no_repeat_ngram_size - 1:
+                    suffix = tuple(seq[-(no_repeat_ngram_size - 1):])
+                    banned: set[int] = set()
+                    for i in range(len(seq) - no_repeat_ngram_size + 1):
+                        if tuple(seq[i:i + no_repeat_ngram_size - 1]) == suffix:
+                            banned.add(seq[i + no_repeat_ngram_size - 1])
+                    for tok in banned:
+                        logits[b, tok] = float("-inf")
+
+        # min_new_tokens: forbid EOS until threshold.
+        if step < min_new_tokens:
+            logits[:, eos_id] = float("-inf")
+
+        next_tok = logits.argmax(dim=-1, keepdim=True)   # (B, 1)
+        # Once finished, force pad_id so EOS isn't re-emitted.
+        next_tok = torch.where(
+            finished.unsqueeze(1),
+            torch.full_like(next_tok, pad_id),
+            next_tok,
+        )
+        generated.append(next_tok)
+        finished = finished | (next_tok.squeeze(1) == eos_id)
+        if bool(finished.all()):
+            break
+
+    full = torch.cat(generated, dim=1)
+    return full[:, prompt_len:]
 
 
 def _copy_body_weights(src: MBartForCausalLM, dst: MBartForCausalLM) -> None:
