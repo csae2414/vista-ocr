@@ -35,47 +35,61 @@ only the OCR+layout task while stage-3 trains on a four-task mix.
 
 ## PDFA hold-out: greedy generation eval
 
-Long-form eval on the same held-out PDFA shard, 100 batches, greedy
-decode with the diagnostic `repetition_penalty=1.05` from
-`make_val_decode_fn`. Run with:
+Long-form eval on the same held-out PDFA shard, 100 batches. Run with:
 
 ```
 python scripts/eval_pdfa_holdout.py \
   --ckpt checkpoints/stage3/ckpt_best.pt \
   --val-shard data/raw/pdfa/pdfa-eng-train-0119.tar \
   --spm data/processed/vocab/sp_en_16k.model \
-  --max-batches 100
+  --max-batches 100 \
+  --repetition-penalty 1.3 --no-repeat-ngram-size 6
 ```
 
 | Metric | Value |
 |---|---|
 | Decoded batches | 100 |
-| Empty hypotheses | **100 / 100 (100 %)** |
-| CER | 1.0000 |
-| WER | 1.0000 |
-| word-F1 | 0.0000 |
-| Wall | 70 s |
+| Empty hypotheses | 7 / 100 (7 %) |
+| CER | **0.8414** |
+| WER | 1.0218 |
+| word-F1 | 0.1562 |
+| Wall | 47 s |
 
-**Honest read.** Train loss reached 3.72 (text+loc combined) and val
-loss bottomed at 4.32 in stage-2 / 4.46 in stage-3, but every single
-greedy hypothesis on the hold-out shard collapses to the empty string.
-The teacher-forced loss says the model has learned the joint
-distribution; greedy decode under the current generation config
-terminates at step 1 every time. Likely culprits to investigate
-before re-running:
+**Honest read.** Numbers are weak relative to the paper's finetune
+targets, but the model is no longer broken: outputs are image-
+conditioned, structured (~30 `<x><y>` lines per page), and contain
+real document text. The WER > 1.0 indicates insertion-dominated errors
+— the model emits more text than the reference; this is consistent
+with under-training (170 K steps, PDFA-only, no licence-restricted
+finetune) and with the language-model prior still partially dominating
+the encoder signal. Stronger conditioning would likely come from
+(a) more pretraining steps, (b) finetune on the target dataset, or
+(c) a stronger encoder→decoder bridge (the paper's exact decoder
+init may be relevant here).
 
-- HF generation-config interaction with the spatial/special-token
-  vocabulary (e.g. EOS being assigned to a different id than the one
-  passed to `generate(eos_id=...)`).
-- `min_new_tokens=0` in the diagnostic decode allowing immediate EOS.
-- A residual pad/eos id collision in the tokenizer or generation kwargs
-  surviving the earlier guard (covered by `tests/test_tokenizer.py`
-  but worth re-asserting against the trained model's first-token
-  argmax).
+## Inference bug fixed during this run
 
-The hold-out CER row in `BENCHMARKS.md` is intentionally left at the
-honest value rather than hidden -- generation must be debugged before
-finetune numbers will be meaningful.
+The first hold-out eval reported 100 / 100 empty hypotheses despite
+healthy training loss. Diagnostic dump (`--debug-dump 2`) found that
+two completely different input images produced **identical** output
+token sequences — a hard signal that cross-attention was being
+ignored at inference.
+
+Root cause: `MBartForCausalLM.prepare_inputs_for_generation()` does
+not propagate `encoder_hidden_states` into the per-step model inputs
+during HF's `generate()` loop, so the decoder sees no encoder features
+during generation even though they were passed as a kwarg. Same class
+of fragility that motivates the optional SDPA monkey-patch.
+
+Fix: replaced the HF `generate()` call inside
+`MBartDecoder.generate_greedy` with a hand-rolled greedy loop that
+calls `model.forward` each step with `encoder_hidden_states` passed
+explicitly; KV cache is preserved so the loop is still O(T) per
+sequence. Tests in `tests/` continue to pass.
+
+After the fix and with reasonable repetition control
+(`repetition_penalty=1.3`, `no_repeat_ngram_size=6`), greedy outputs
+become image-conditioned and structured.
 
 ## Reporting your numbers
 
