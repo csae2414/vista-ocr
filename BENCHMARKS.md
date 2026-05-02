@@ -98,6 +98,29 @@ After the fix and with reasonable repetition control
 (`repetition_penalty=1.3`, `no_repeat_ngram_size=6`), greedy outputs
 become image-conditioned and structured.
 
+## Diagnostic ablation table (planned)
+
+To extract per-knob value before booking expensive GPU time, the next
+PDFA hold-out evaluation runs a staged ablation on the 3090. Each row
+fixes everything except the named knob; baseline = the 2026-05-02 run
+documented above.
+
+| Run | Decoder init | Eff batch | Data | Aug | CER | WER | word-F1 |
+|---|---|---|---|---|---|---|---|
+| Baseline | random | 1 | PDFA-only | off | 0.8414 | 1.0218 | 0.1562 |
+| A | **donut** | 1 | PDFA-only | off | _TBD_ | _TBD_ | _TBD_ |
+| B | donut | **8** | PDFA-only | off | _TBD_ | _TBD_ | _TBD_ |
+| C | donut | 8 | **paper-mix** | **on** | _TBD_ | _TBD_ | _TBD_ |
+
+Decision threshold: word-F1 from Run A must at least double the
+baseline (0.156 → 0.30) for the Donut decoder transfer to be
+considered effective. If A passes, run B; if B helps further, run C.
+Otherwise abort and investigate before any L40s/A100 spend.
+
+Each run uses identical eval flags via `scripts/eval_run.sh
+<ckpt-path>`; the only thing that changes between rows is the input
+checkpoint.
+
 ## Reporting your numbers
 
 PRs welcome to fill in this table from your own runs. Please include:

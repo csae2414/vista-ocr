@@ -11,6 +11,7 @@ paper-faithfulness audit.
    :caption: Contents:
 
    overview
+   operator-runbook
    api/index
 
 Indices
