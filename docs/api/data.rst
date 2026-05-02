@@ -28,6 +28,11 @@ Multi-task mixture sampler
 
 .. automodule:: vista_ocr.data.mixture
 
+Multi-dataset mixture stream
+----------------------------
+
+.. automodule:: vista_ocr.data.mixture_stream
+
 Real datasets
 -------------
 
