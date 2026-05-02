@@ -107,6 +107,10 @@ def main() -> None:
     ap.add_argument("--no-repeat-ngram-size", type=int, default=0,
                     help="Block n-grams from repeating. 0=off; 3 forbids any "
                          "3-gram from re-occurring (kills <x_38> attractor).")
+    ap.add_argument("--max-new-tokens", type=int, default=512,
+                    help="Per-sample max new tokens. PDFA pages can be long "
+                         "(50-200 words plus ~3-5 spatial tokens per line); "
+                         "raise to 2048 for long pages.")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
 
@@ -135,6 +139,7 @@ def main() -> None:
     )
     decode_fn = make_val_decode_fn(
         tokenizer,
+        max_new_tokens=args.max_new_tokens,
         min_new_tokens=args.min_new_tokens,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,

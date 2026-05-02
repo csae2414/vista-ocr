@@ -43,29 +43,36 @@ python scripts/eval_pdfa_holdout.py \
   --val-shard data/raw/pdfa/pdfa-eng-train-0119.tar \
   --spm data/processed/vocab/sp_en_16k.model \
   --max-batches 100 \
-  --repetition-penalty 1.3 --no-repeat-ngram-size 6
+  --repetition-penalty 1.3 --no-repeat-ngram-size 6 \
+  --max-new-tokens 512
 ```
 
-| Metric | Value |
-|---|---|
-| Decoded batches | 100 |
-| Empty hypotheses | 7 / 100 (7 %) |
-| CER | **0.8414** |
-| WER | 1.0218 |
-| word-F1 | 0.1562 |
-| Wall | 47 s |
+| Metric | max_new_tokens=512 | max_new_tokens=2048 |
+|---|---|---|
+| Decoded batches | 100 | 100 |
+| Empty hypotheses | 7 / 100 | 6 / 100 |
+| CER | **0.8414** | 0.9074 |
+| WER | 1.0218 | 1.1516 |
+| word-F1 | 0.1562 | 0.1451 |
+| Wall | 47 s | 85 s |
 
-**Honest read.** Numbers are weak relative to the paper's finetune
-targets, but the model is no longer broken: outputs are image-
-conditioned, structured (~30 `<x><y>` lines per page), and contain
-real document text. The WER > 1.0 indicates insertion-dominated errors
-— the model emits more text than the reference; this is consistent
-with under-training (170 K steps, PDFA-only, no licence-restricted
-finetune) and with the language-model prior still partially dominating
-the encoder signal. Stronger conditioning would likely come from
-(a) more pretraining steps, (b) finetune on the target dataset, or
-(c) a stronger encoder→decoder bridge (the paper's exact decoder
-init may be relevant here).
+Raising the per-sample cap from 512 to 2 048 tokens **made every
+metric worse**. This rules out truncation as the bottleneck: the model
+emits a few real OCR tokens early, then drifts into a learned PDFA
+text prior; the longer cap just lets it emit more hallucinated tokens.
+The 512-row is the honest baseline.
+
+**Diagnosis.** The model is image-conditioned (verified — different
+images produce different outputs) but the conditioning is *weak*. With
+a random-init decoder on a 170 K-step PDFA-only training budget, the
+language-model prior dominates whenever the visual signal is
+ambiguous. The likely highest-leverage fix is initialising the
+decoder body from `facebook/mbart-large-50` instead of random init
+(the codebase already has `_copy_body_weights` plumbing for this);
+the paper itself indicates an mBART decoder backbone. Other reasonable
+follow-ups: more pretraining steps (typical document-OCR convergence
+is at 300 K-1 M steps), folding the already-downloaded IDL data into
+a mixed pretraining stream, finetune on the target dataset.
 
 ## Inference bug fixed during this run
 
