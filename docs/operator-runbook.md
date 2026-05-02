@@ -48,6 +48,39 @@ INIT_DECODER_FROM=random GRAD_ACCUM_STEPS=1 AUGMENT=0 \
   ./scripts/pretrain_chain.sh 2>&1 | tee logs/pretrain_chain.log
 ```
 
+### L40S / 48 GB+ box (extended schedule + speed knobs)
+
+```bash
+PAGE_PRESET=large \
+GRAD_ACCUM_STEPS=16 \
+SDPA=1 \
+GRAD_CKPT=0 \
+INIT_DECODER_FROM=donut AUGMENT=0 \
+STAGE1_STEPS=50000 STAGE2_STEPS=200000 STAGE3_STEPS=100000 \
+screen -S train -d -m ./scripts/pretrain_supervised.sh
+```
+
+`SDPA=1` runs the C3 ship-gate first (forward / backward / KV-cache /
+beam log-prob / autocast bf16 paper shape), aborts on failure, then
+applies the patch and writes the PASS line to
+`<out>/sdpa_manifest.txt`. Measured on L40S: ~10× kernel speedup, −17 %
+peak memory.
+
+`GRAD_CKPT=0` disables encoder gradient checkpointing — frees the
+encoder forward from recompute on the backward pass. Safe at large
+preset on 48 GB. Combined with SDPA, expect ~2× per-step speedup
+vs. the L40S default.
+
+Auto-launch when downloads finish (separate screen):
+
+```bash
+PDFA_TARGET=120 IDL_TARGET=12 \
+PAGE_PRESET=large GRAD_ACCUM_STEPS=16 SDPA=1 GRAD_CKPT=0 \
+INIT_DECODER_FROM=donut AUGMENT=0 \
+STAGE1_STEPS=50000 STAGE2_STEPS=200000 STAGE3_STEPS=100000 \
+tmux new-session -d -s launcher ./scripts/launch_when_ready.sh
+```
+
 ## 4. Hold-out evaluation
 
 ```bash

@@ -4,6 +4,41 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-02 — speed knobs + auto-launcher
+
+After moving the run to an L40S box, two speed knobs were exposed for
+the chain so the per-step wall-clock can be cut without touching the
+math:
+
+### Added
+
+- `--no-grad-ckpt` flag on `stage{1,2,3}_run.py` (default off, matching
+  the prior 3090 behaviour). Disables encoder gradient checkpointing
+  for ~30-50 % faster encoder forward at the cost of activation memory.
+  Safe on 48 GB+ cards.
+- `pretrain_chain.sh` env vars: `SDPA=1` enables the optional C3
+  monkey-patch (ship-gate + manifest already in place); `GRAD_CKPT=0`
+  forwards `--no-grad-ckpt` to all stage scripts.
+- `scripts/launch_when_ready.sh` — polling launcher that waits for
+  `--num-pdfa-shards` PDFA + `--num-idl-shards` IDL + the SPM
+  tokenizer before firing `pretrain_supervised.sh` in screen.
+
+### Fixed
+
+- `pretrain_supervised.sh` and `pretrain_chain.sh` conda activation:
+  they used to look only in `~/miniconda3` (per-user install). Now
+  they probe `~/miniconda3`, `/opt/miniconda3`, `/opt/anaconda3`, and
+  `~/anaconda3` so a shared install works out of the box. Also the
+  activation block now wraps `set +u` ... `set -u` so the activate
+  hooks (which reference some unset variables) don't trip the
+  supervisor's `set -uo pipefail`.
+
+### Measured (L40S)
+
+- SDPA monkey-patch: **10.05x** kernel speedup, **-17 %** peak memory
+  vs eager at the bf16 paper attention shape. Ship-gate manifest
+  pinned to `<out>/sdpa_manifest.txt`.
+
 ## 2026-05-02 — paper-init investigation
 
 After a 7 h end-to-end pretrain run produced CER 0.84 / word-F1 0.16

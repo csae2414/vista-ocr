@@ -57,6 +57,10 @@ messages and module docstrings.
   per VISTA-OCR §3.2. Loads the BART text-decoder body from
   `naver-clova-ix/donut-base`; vocab-shaped tensors are skipped
   (different tokenizer) and re-trained from random init.
+- **Speed knobs** for 48 GB+ cards: `SDPA=1` enables the optional
+  10× attention kernel (ship-gate runs first), `GRAD_CKPT=0`
+  disables encoder gradient checkpointing for a further ~30-50 %
+  per-step speedup. Both are env-tunable on `pretrain_chain.sh`.
 - **242 unit tests**, Sphinx API docs, MIT licensed.
 
 ## Quick start

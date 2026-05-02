@@ -13,9 +13,16 @@
 #   INIT_DECODER_FROM   default donut   (or "random")
 #   GRAD_ACCUM_STEPS    default 8       (paper effective batch ~11)
 #   AUGMENT             default 1       (set 0 to disable B2 augment)
+#   PAGE_PRESET         default medium  ('large' = 1400x1050, 48 GB+ cards)
 #   STAGE1_STEPS        default 20000
 #   STAGE2_STEPS        default 80000
 #   STAGE3_STEPS        default 70000
+#   SDPA                default 0       (1=enable C3 monkey-patch; ~10x
+#                                       kernel speedup on L40S, ship-gate
+#                                       runs first, manifest pinned)
+#   GRAD_CKPT           default 1       (0=disable encoder gradient
+#                                       checkpointing for ~30-50% encoder
+#                                       speedup; safe on 48 GB+ cards)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -44,10 +51,23 @@ STAGE3_STEPS="${STAGE3_STEPS:-70000}"
 # set PAGE_PRESET=large for 1400x1050 to feed more pixels per glyph.
 # Use 'auto' to let the helper pick from CUDA VRAM.
 PAGE_PRESET="${PAGE_PRESET:-medium}"
+# Speed knobs (defaults preserve back-compat with the 3090 baseline).
+# SDPA: enable the C3 monkey-patch; ship-gate fires before training.
+# GRAD_CKPT: 1=on (3090 default), 0=off (saves ~30-50% encoder time
+# on 48 GB+ cards at the cost of activation memory).
+SDPA="${SDPA:-0}"
+GRAD_CKPT="${GRAD_CKPT:-1}"
 
 AUG_FLAG=()
 if [[ "$AUGMENT" == "1" ]]; then
   AUG_FLAG=(--augment)
+fi
+SPEED_FLAGS=()
+if [[ "$SDPA" == "1" ]]; then
+  SPEED_FLAGS+=(--sdpa)
+fi
+if [[ "$GRAD_CKPT" == "0" ]]; then
+  SPEED_FLAGS+=(--no-grad-ckpt)
 fi
 
 # Discover shards dynamically; reserve the highest-indexed shard for val.
@@ -71,6 +91,8 @@ echo "  grad_accum_steps : $GRAD_ACCUM_STEPS"
 echo "  augment          : $AUGMENT"
 echo "  page_preset      : $PAGE_PRESET"
 echo "  steps            : ${STAGE1_STEPS} / ${STAGE2_STEPS} / ${STAGE3_STEPS}"
+echo "  sdpa             : $SDPA"
+echo "  grad_ckpt        : $GRAD_CKPT"
 echo
 
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="
@@ -82,7 +104,8 @@ python scripts/stage1_run.py \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --page-preset "$PAGE_PRESET" \
-  "${AUG_FLAG[@]}"
+  "${AUG_FLAG[@]}" \
+  "${SPEED_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  STAGE 2: multimodal pretraining (${STAGE2_STEPS} steps) ==="
@@ -94,7 +117,8 @@ python scripts/stage2_run.py \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --page-preset "$PAGE_PRESET" \
-  "${AUG_FLAG[@]}"
+  "${AUG_FLAG[@]}" \
+  "${SPEED_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  STAGE 3: multitask pretraining (${STAGE3_STEPS} steps) ==="
@@ -106,7 +130,8 @@ python scripts/stage3_run.py \
   --steps "$STAGE3_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --page-preset "$PAGE_PRESET" \
-  "${AUG_FLAG[@]}"
+  "${AUG_FLAG[@]}" \
+  "${SPEED_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  ALL STAGES DONE ==="

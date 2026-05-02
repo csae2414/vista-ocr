@@ -98,6 +98,10 @@ def main() -> None:
                     help="Effective batch = micro_batch * accum. Paper "
                          "uses ~11 on A100-80GB; raise to 8 on a 24 GB "
                          "3090 for paper-comparable gradient signal.")
+    ap.add_argument("--no-grad-ckpt", action="store_true",
+                    help="Disable encoder gradient checkpointing. Faster "
+                         "per step but ~3-5x more activation memory; safe "
+                         "on 48 GB+ cards.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -119,7 +123,8 @@ def main() -> None:
     grid = SpatialGrid(canvas_h=3508, canvas_w=2480, quantizer_px=10, scheme="original")
     tokenizer = VistaTokenizer(spm_model_path=str(args.spm), grid=grid)
 
-    encoder = FCNEncoderWidther(input_channels=1, dropout=0.5, gradient_checkpointing=True)
+    grad_ckpt = not args.no_grad_ckpt
+    encoder = FCNEncoderWidther(input_channels=1, dropout=0.5, gradient_checkpointing=grad_ckpt)
     decoder = small_random_decoder(
         vocab_size=tokenizer.vocab_size, d_model=1024, n_layers=4, n_heads=16,
         ffn_dim=4096, max_position_embeddings=4096,
@@ -155,7 +160,7 @@ def main() -> None:
         base_lr=args.lr, warmup_steps=50, total_steps=args.steps,
         micro_batch_size=1, grad_accum_steps=args.grad_accum_steps, log_every=100,
         lambda_text=1.0, target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
-        device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
+        device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=grad_ckpt,
         freeze_decoder=True, adam_betas=(0.9, 0.98), adam_eps=1e-6,
         label_smoothing=0.1,
         # A4: keep a small LR through the cosine tail.
