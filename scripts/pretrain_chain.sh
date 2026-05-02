@@ -20,10 +20,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if command -v conda >/dev/null 2>&1 && [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
-  source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate vista-ocr
-fi
+set +u
+for _conda_root in "$HOME/miniconda3" /opt/miniconda3 /opt/anaconda3 "$HOME/anaconda3"; do
+  if [[ -f "$_conda_root/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$_conda_root/etc/profile.d/conda.sh"
+    conda activate vista-ocr
+    break
+  fi
+done
+set -u
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
@@ -33,6 +39,11 @@ AUGMENT="${AUGMENT:-1}"
 STAGE1_STEPS="${STAGE1_STEPS:-20000}"
 STAGE2_STEPS="${STAGE2_STEPS:-80000}"
 STAGE3_STEPS="${STAGE3_STEPS:-70000}"
+# Page resolution: forwarded to all three stage scripts via --page-preset.
+# Defaults to 'medium' (1100x850, fits 24 GB 3090). On a 48 GB+ box,
+# set PAGE_PRESET=large for 1400x1050 to feed more pixels per glyph.
+# Use 'auto' to let the helper pick from CUDA VRAM.
+PAGE_PRESET="${PAGE_PRESET:-medium}"
 
 AUG_FLAG=()
 if [[ "$AUGMENT" == "1" ]]; then
@@ -58,6 +69,8 @@ echo "  spm              : $SPM"
 echo "  init_decoder_from: $INIT_DECODER_FROM"
 echo "  grad_accum_steps : $GRAD_ACCUM_STEPS"
 echo "  augment          : $AUGMENT"
+echo "  page_preset      : $PAGE_PRESET"
+echo "  steps            : ${STAGE1_STEPS} / ${STAGE2_STEPS} / ${STAGE3_STEPS}"
 echo
 
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="
@@ -68,6 +81,7 @@ python scripts/stage1_run.py \
   --steps "$STAGE1_STEPS" --val-every 500 --ckpt-every 500 \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}"
 
 echo
@@ -79,6 +93,7 @@ python scripts/stage2_run.py \
   --init-from checkpoints/stage1/ckpt_best.pt \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}"
 
 echo
@@ -90,6 +105,7 @@ python scripts/stage3_run.py \
   --init-from checkpoints/stage2/ckpt_best.pt \
   --steps "$STAGE3_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}"
 
 echo

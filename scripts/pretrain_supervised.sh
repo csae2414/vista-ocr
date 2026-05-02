@@ -17,12 +17,21 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # Ensure conda + the vista-ocr env are on PATH even when launched
-# from a screen/tmux subshell that hasn't sourced ~/.bashrc.
-if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
-  # shellcheck disable=SC1091
-  source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  conda activate vista-ocr
-fi
+# from a screen/tmux subshell that hasn't sourced ~/.bashrc. Try the
+# common install locations: per-user (~/miniconda3) and shared
+# (/opt/miniconda3).
+# Some conda activate hooks reference unset variables (e.g. MKL_*) and
+# would trip ``set -u``. Disable nounset just for this block.
+set +u
+for _conda_root in "$HOME/miniconda3" /opt/miniconda3 /opt/anaconda3 "$HOME/anaconda3"; do
+  if [[ -f "$_conda_root/etc/profile.d/conda.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$_conda_root/etc/profile.d/conda.sh"
+    conda activate vista-ocr
+    break
+  fi
+done
+set -u
 
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-20}"
 RESTART_SLEEP="${RESTART_SLEEP:-30}"
