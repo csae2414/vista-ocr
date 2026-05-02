@@ -86,6 +86,9 @@ def main() -> None:
     ap.add_argument("--sdpa", action="store_true",
                     help="C3: monkey-patch MBartAttention to use SDPA. "
                          "Runs the ship-gate first; aborts on failure.")
+    ap.add_argument("--grad-accum-steps", type=int, default=1,
+                    help="Effective batch = micro_batch * accum. 8 is "
+                         "paper-comparable on a 24 GB 3090.")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -138,7 +141,7 @@ def main() -> None:
 
     cfg = TrainConfig(
         base_lr=args.lr, warmup_steps=2000, total_steps=args.steps,
-        micro_batch_size=1, grad_accum_steps=1, log_every=200,
+        micro_batch_size=1, grad_accum_steps=args.grad_accum_steps, log_every=200,
         lambda_text=args.lambda_text,
         target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=True,
