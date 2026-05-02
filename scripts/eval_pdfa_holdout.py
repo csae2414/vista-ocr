@@ -39,6 +39,50 @@ from vista_ocr.training.val_helpers import make_val_decode_fn, pdfa_val_batches
 LOG = logging.getLogger("eval_pdfa")
 
 
+def _debug_one_batch(model, item, tokenizer, min_new_tokens,
+                     repetition_penalty, no_repeat_ngram_size, idx):
+    """Print prompt, raw out_ids, post-strip out_ids, parser output, plain
+    SPM decode of the post-prompt suffix for one batch. Distinguishes a
+    parser bug (model emits text but parser drops it) from a real
+    generation collapse (model emits prompt + EOS only or repeats a
+    single token forever).
+    """
+    batch, ref = item
+    device = next(model.parameters()).device
+    prompt_ids = [tokenizer.bos_id, *tokenizer.build_ocr_prompt(with_layout=True)]
+    prompt = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+    out_ids = model.generate(
+        images=batch.images.to(device),
+        prompt_ids=prompt,
+        eos_id=tokenizer.eos_id,
+        pad_id=tokenizer.pad_id,
+        max_new_tokens=512,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
+        min_new_tokens=min_new_tokens,
+    )[0].tolist()
+
+    suffix = out_ids[len(prompt_ids):]
+    suffix_no_eos = [i for i in suffix if i != tokenizer.eos_id]
+    pieces = [tokenizer.id_to_piece(i) for i in suffix_no_eos[:60]]
+    plain_text = tokenizer.decode_ids(suffix_no_eos)
+    parsed_lines = tokenizer.parse_original_output(suffix_no_eos)
+    parsed_text = " ".join(line.text for line in parsed_lines)
+
+    print(f"\n--- DEBUG batch {idx} ---")
+    print(f"ref            : {ref[:120]!r}")
+    print(f"prompt_ids     : {prompt_ids}")
+    print(f"len(out_ids)   : {len(out_ids)}  (prompt+gen)")
+    print(f"len(suffix)    : {len(suffix)}  (post-prompt)")
+    print(f"suffix first 30: {suffix[:30]}")
+    print(f"suffix last 5  : {suffix[-5:] if len(suffix) >= 5 else suffix}")
+    print(f"contains EOS   : {tokenizer.eos_id in suffix}")
+    print(f"first 20 pieces: {pieces[:20]}")
+    print(f"plain decode   : {plain_text[:200]!r}")
+    print(f"parsed lines   : {len(parsed_lines)} -> {parsed_text[:200]!r}")
+    print()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", type=Path, required=True)
@@ -51,6 +95,18 @@ def main() -> None:
     ap.add_argument("--out-json", type=Path, default=None,
                     help="Write the result dict as JSON for downstream "
                          "(e.g. BENCHMARKS.md) ingestion.")
+    ap.add_argument("--debug-dump", type=int, default=0,
+                    help="For the first N batches, print prompt, raw out_ids, "
+                         "post-strip out_ids, parser output, and plain SPM "
+                         "decode of the post-prompt suffix. Diagnostic.")
+    ap.add_argument("--min-new-tokens", type=int, default=0,
+                    help="Force the model to emit at least this many tokens.")
+    ap.add_argument("--repetition-penalty", type=float, default=1.05,
+                    help="HF repetition_penalty. 1.0=off; >1.0 discounts "
+                         "already-emitted tokens. 1.3-1.5 typical for OCR.")
+    ap.add_argument("--no-repeat-ngram-size", type=int, default=0,
+                    help="Block n-grams from repeating. 0=off; 3 forbids any "
+                         "3-gram from re-occurring (kills <x_38> attractor).")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
 
@@ -77,7 +133,12 @@ def main() -> None:
     pre_cfg = PreprocessConfig(
         target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
     )
-    decode_fn = make_val_decode_fn(tokenizer)
+    decode_fn = make_val_decode_fn(
+        tokenizer,
+        min_new_tokens=args.min_new_tokens,
+        repetition_penalty=args.repetition_penalty,
+        no_repeat_ngram_size=args.no_repeat_ngram_size,
+    )
 
     refs: list[str] = []
     hyps: list[str] = []
@@ -87,6 +148,12 @@ def main() -> None:
         for i, item in enumerate(pdfa_val_batches(args.val_shard, tokenizer, pre_cfg)):
             if i >= args.max_batches:
                 break
+            if i < args.debug_dump:
+                _debug_one_batch(
+                    model, item, tokenizer,
+                    args.min_new_tokens, args.repetition_penalty,
+                    args.no_repeat_ngram_size, i,
+                )
             try:
                 rs, hs = decode_fn(model, item)
             except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:  # noqa: BLE001
