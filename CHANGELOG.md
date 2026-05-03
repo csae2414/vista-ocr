@@ -8,6 +8,19 @@ live in commit messages.
 
 Three defects from a senior-dev review of the Run B pass.
 
+### Tests
+
+- **Early-stop train_loop integration coverage** (`test_training.py`).
+  The 11 unit tests in `test_early_stop.py` covered
+  ``early_stop_decision`` in isolation; nothing exercised the wiring
+  through ``train()``. Three new integration tests close the gap: a
+  flat val curve aborts the loop and emits the structured
+  ``EARLY_STOP:`` log line; ``ckpt_final.pt`` carries
+  ``reason=early_stop`` plus a round-trippable ``early_stop_state``;
+  ``resume_from`` restores the prior counters so a kill+restart does
+  not pay another full ``patience * val_every`` window before
+  aborting (F2 regression coverage).
+
 ### Fixed
 
 - **Mixed loader silently dropped IDL when `len(idl_shards) < num_workers`**

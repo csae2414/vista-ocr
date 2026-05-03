@@ -428,3 +428,183 @@ def test_freeze_decoder_disables_decoder_grads(
     assert all(not p.requires_grad for p in tiny_model.decoder.parameters())
     # Restore.
     tiny_model.freeze_decoder(False)
+
+
+# ---------- D2: early-stop train_loop integration ---------------------------
+#
+# The 11 unit tests in tests/test_early_stop.py cover ``early_stop_decision``
+# in isolation. These three tests cover the wiring through ``train()``:
+# (1) a flat val curve aborts the loop and emits the structured
+# ``EARLY_STOP:`` log line; (2) the early-stop state is persisted into
+# ``ckpt_final.pt`` so a forensic reader can see why the run stopped;
+# (3) ``resume_from`` restores the prior counters so a kill+restart does
+# not pay another full ``patience * val_every`` window before aborting.
+
+def _flat_val_train_cfg(out_dir, *, warmup_vals, patience, val_every=1):
+    """Build a TrainConfig that fires val every step with a constant
+    val_loss, so the early-stop EMA never improves."""
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        EarlyStopConfig,
+        ValConfig,
+    )
+
+    def loss_fn(_model, _batch):
+        return torch.tensor(1.234)
+
+    return TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=out_dir, save_every=999, keep_last=3,
+        ),
+        val=ValConfig(every=val_every, max_batches=1),
+        val_batches_factory=lambda: iter([0]),
+        val_loss_fn=loss_fn,
+        early_stop=EarlyStopConfig(
+            enabled=True,
+            patience=patience,
+            min_delta=0.01,
+            smooth_window=3,
+            warmup_vals=warmup_vals,
+            spike_threshold=10.0,    # silence spike branch
+            spike_consecutive=999,
+        ),
+    )
+
+
+def test_early_stop_aborts_train_loop_with_structured_log(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """D2: with a flat val curve and patience=2 / warmup_vals=1 the
+    train loop must return before ``max_steps`` and emit the structured
+    ``EARLY_STOP:`` line that the side-process tailer parses."""
+    import copy
+    import logging
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = _flat_val_train_cfg(tmp_path, warmup_vals=1, patience=2)
+
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        # Plenty of samples so micro_iter doesn't run dry before the
+        # abort decision fires; max_steps caps the upper bound.
+        history = train(
+            model, list(islice(cycle([sample]), 100)),
+            tokenizer, cfg, max_steps=50,
+        )
+
+    # First val sets smoothed_best (counter=0). val 2 is warmup.
+    # vals 3, 4 increment no_improve to 2 == patience -> abort at step 4.
+    assert len(history) <= 10, (
+        f"train_loop should have early-stopped well before max_steps; "
+        f"saw {len(history)} steps"
+    )
+    structured = [r for r in caplog.records if r.message.startswith("EARLY_STOP: ")]
+    assert structured, "Expected a structured EARLY_STOP: log line"
+    msg = structured[0].message
+    for needle in ("step=", "reason=patience_exceeded",
+                   "smoothed_best=", "patience=2",
+                   "no_improve=", "spike="):
+        assert needle in msg, f"missing field {needle!r} in {msg!r}"
+
+
+def test_early_stop_state_persists_to_checkpoint(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    """D2: after early-stop fires, ``ckpt_final.pt`` carries
+    ``reason=early_stop`` plus a round-trippable ``early_stop_state``
+    dict. Forensic readers (and the resume path in the next test)
+    depend on this."""
+    import copy
+
+    from vista_ocr.training.callbacks import EarlyStopState, load_checkpoint
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = _flat_val_train_cfg(tmp_path, warmup_vals=1, patience=2)
+
+    train(model, list(islice(cycle([sample]), 100)),
+          tokenizer, cfg, max_steps=50)
+
+    final = tmp_path / "ckpt_final.pt"
+    assert final.exists(), "early-stop must write ckpt_final.pt"
+
+    # Use load_checkpoint so this also exercises the resume code path.
+    from vista_ocr.training.train_loop import make_optimizer
+    opt = make_optimizer(model, cfg)
+    payload = load_checkpoint(final, model=model, optimizer=opt)
+    assert payload.extra.get("reason") == "early_stop"
+    assert payload.extra.get("early_stop_reason") == "patience_exceeded"
+
+    state = EarlyStopState.from_dict(payload.extra.get("early_stop_state"))
+    assert state.n_vals_seen >= 3
+    assert state.no_improve_counter >= cfg.early_stop.patience
+    # smoothed_best converged to the constant val_loss.
+    assert abs(state.smoothed_best - 1.234) < 1e-3
+
+
+def test_early_stop_state_restores_on_resume(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """D2 / F2: a checkpoint whose ``early_stop_state`` already has
+    ``no_improve_counter == patience - 1`` must abort on the very next
+    val pass. Without state restore the resumed run would reset the
+    counter and pay another ``patience * val_every`` window before
+    aborting -- which is exactly the regression F2 was meant to
+    prevent."""
+    import copy
+    import logging
+
+    from vista_ocr.training.callbacks import (
+        EarlyStopState,
+        save_checkpoint,
+    )
+    from vista_ocr.training.train_loop import make_optimizer
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = _flat_val_train_cfg(tmp_path, warmup_vals=0, patience=3)
+
+    # Pre-craft a checkpoint with the patience counter one short of abort.
+    crafted = EarlyStopState(
+        val_history=[1.234, 1.234, 1.234, 1.234],
+        smoothed_best=1.234,
+        no_improve_counter=cfg.early_stop.patience - 1,
+        spike_counter=0,
+        n_vals_seen=4,    # already past warmup_vals=0
+    )
+    seed_path = tmp_path / "ckpt_seed.pt"
+    seed_opt = make_optimizer(model, cfg)
+    save_checkpoint(
+        seed_path,
+        step=0, model=model, optimizer=seed_opt,
+        best_val_loss=1.234,
+        extra={"early_stop_state": crafted.to_dict()},
+    )
+
+    # Resume from the seed; abort should fire on the very first val
+    # pass after step 0 (val_every=1, so that's step 1).
+    resume_dir = tmp_path / "resume"
+    resume_dir.mkdir()
+    cfg_resume = _flat_val_train_cfg(resume_dir, warmup_vals=0, patience=3)
+    cfg_resume = TrainConfig(
+        **{**cfg_resume.__dict__, "resume_from": seed_path},
+    )
+
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        history = train(
+            model, list(islice(cycle([sample]), 50)),
+            tokenizer, cfg_resume, max_steps=10,
+        )
+
+    # Without state restore, abort would only fire at val
+    # warmup_vals + patience = 3 (steps 1,2,3 -> abort at step 3+).
+    # With state restore, the prior counter (patience-1) plus this
+    # val (no improvement on a flat curve) hits patience immediately.
+    assert len(history) <= 2, (
+        f"resumed run should abort on the first val pass; saw {len(history)}"
+    )
+    assert any("EARLY_STOP: " in r.message for r in caplog.records)
+    assert any("Resumed from" in r.message for r in caplog.records)
