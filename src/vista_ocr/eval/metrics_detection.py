@@ -46,6 +46,22 @@ def iou(a: Box, b: Box) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def expand_box(box: Box, px: int) -> Box:
+    """Expand a bbox by ``px`` pixels on each side (negative contracts).
+
+    The eval verb uses this to apply the paper's §4.1.1 +1 / +2 px
+    expansion to PREDICTED boxes only. Never call this on ground
+    truth -- doing so would inflate detection F1 above what's
+    achievable. The asymmetry is enforced by tests, not by this
+    module (the helper itself is symmetric; the caller wires the
+    asymmetry).
+    """
+    if px == 0:
+        return box
+    x1, y1, x2, y2 = box
+    return (x1 - px, y1 - px, x2 + px, y2 + px)
+
+
 # -------------------- DetEval (Wolf & Jolion 2006) -----------------------
 
 @dataclass
