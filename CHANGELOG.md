@@ -45,6 +45,17 @@ parentheses live in the named files.
   attempt. Failed network at hour 0 no longer trips a 20-attempt
   restart loop with no useful error.
 
+### Dataset adapters
+
+- `scripts/datasets/` -- per-benchmark prep folder. Each adapter
+  takes the dataset's "as distributed" layout and emits the flat
+  layout the corresponding loader expects. Convention + planned
+  list in `scripts/datasets/README.md`.
+- `scripts/datasets/setup_sroie.sh` -- flattens the Kaggle "SROIE
+  datasetv2" layout (`train/{img,box,entities}`) to the loader's
+  `train/<id>.{jpg,txt}` flat form. Symlinks only -- no file
+  copies. Re-runnable.
+
 ### Run B launch envs (the recommended set on the L40S)
 
 ```

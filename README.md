@@ -61,6 +61,18 @@ messages and module docstrings.
   10× attention kernel (ship-gate runs first), `GRAD_CKPT=0`
   disables encoder gradient checkpointing for a further ~30-50 %
   per-step speedup. Both are env-tunable on `pretrain_chain.sh`.
+- **Early stopping** (`EARLY_STOP=1`) with EMA-smoothed patience +
+  spike detection. Resume-safe (state persists into the checkpoint)
+  and structured `EARLY_STOP:` log line for operator parsing. Saves
+  wall-clock when training plateaus before the configured step
+  budget; per-stage defaults differ (calibration > multimodal).
+- **On-disk sample cache** (`scripts/cache_dataset.py`) for fixed-
+  resolution training runs — pre-renders PDFA / IDL once, then the
+  hot loop is pure I/O. Geometry-bound manifest, atomic write,
+  resume on partial render.
+- **Dataset adapters** (`scripts/datasets/`) flatten benchmark-
+  specific layouts into our loader's expected form. SROIE shipped;
+  IAM / MAURDOR / PageXML are the planned slots.
 - **242 unit tests**, Sphinx API docs, MIT licensed.
 
 ## Quick start
