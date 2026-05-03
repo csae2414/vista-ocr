@@ -94,6 +94,8 @@ def main() -> None:
                          "paper-comparable on a 24 GB 3090.")
     ap.add_argument("--no-grad-ckpt", action="store_true",
                     help="Disable encoder gradient checkpointing.")
+    ap.add_argument("--compile", action="store_true", dest="compile_model",
+                    help="torch.compile the model. Falls back to eager.")
     ap.add_argument("--early-stop", action="store_true")
     ap.add_argument("--early-stop-patience", type=int, default=10,
                     help="Stage 2 (unfrozen multimodal) -- patience tighter "
@@ -158,6 +160,7 @@ def main() -> None:
         lambda_text=args.lambda_text,
         target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=grad_ckpt,
+        compile_model=args.compile_model,
         freeze_decoder=False,
         adam_betas=(0.9, 0.98), adam_eps=1e-6, label_smoothing=0.1,
         # A4

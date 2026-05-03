@@ -176,6 +176,38 @@ def test_save_final_can_be_disabled(
     assert not (tmp_path / "ckpt_final.pt").exists()
 
 
+def test_compile_fallback_keeps_training_running(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, monkeypatch, caplog,
+):
+    """Phase 6: when ``compile_model=True`` but ``torch.compile`` raises,
+    the train loop logs a WARNING and continues with the eager model.
+    Catches the regression where a Compile failure would stop a multi-
+    day run at hour 0."""
+    import copy
+    import logging
+    import torch as _torch
+
+    def _failing_compile(model, **_kwargs):
+        raise RuntimeError("simulated compile failure")
+
+    monkeypatch.setattr(_torch, "compile", _failing_compile)
+
+    # Use a deepcopy so the module-scoped fixture isn't mutated -- the
+    # overfit test downstream expects the fresh init.
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=2,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        compile_model=True,
+    )
+    with caplog.at_level(logging.WARNING):
+        history = train(model, [sample], tokenizer, cfg, max_steps=1)
+    assert len(history) == 1
+    assert any("compile failed" in r.message.lower() for r in caplog.records)
+
+
 def test_one_optim_step_runs(tiny_model: VistaOCR, tokenizer: VistaTokenizer):
     sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
     cfg = TrainConfig(

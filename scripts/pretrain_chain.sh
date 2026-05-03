@@ -31,6 +31,8 @@
 #                                       and min-delta defaults differ
 #                                       per stage and live in the
 #                                       individual stageN_run.py)
+#   COMPILE             default 0       (1=torch.compile the model;
+#                                       falls back to eager on failure)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -72,10 +74,15 @@ PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
 # val_loss has plateaued (saves wall-clock when convergence happens
 # earlier than the configured step budget).
 EARLY_STOP="${EARLY_STOP:-0}"
+# torch.compile (Phase 6). Off by default. Enable for Run C.
+COMPILE="${COMPILE:-0}"
 
 ES_FLAGS=()
 if [[ "$EARLY_STOP" == "1" ]]; then
   ES_FLAGS=(--early-stop)
+fi
+if [[ "$COMPILE" == "1" ]]; then
+  SPEED_FLAGS+=(--compile)
 fi
 
 AUG_FLAG=()
@@ -116,6 +123,7 @@ echo "  grad_ckpt        : $GRAD_CKPT"
 echo "  num_workers      : $NUM_WORKERS"
 echo "  prefetch_factor  : $PREFETCH_FACTOR"
 echo "  early_stop       : $EARLY_STOP"
+echo "  compile          : $COMPILE"
 echo
 
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="

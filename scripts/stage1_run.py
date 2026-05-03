@@ -123,6 +123,10 @@ def main() -> None:
                     help="Disable encoder gradient checkpointing. Faster "
                          "per step but ~3-5x more activation memory; safe "
                          "on 48 GB+ cards.")
+    ap.add_argument("--compile", action="store_true", dest="compile_model",
+                    help="torch.compile() the model. Off by default; first "
+                         "step takes ~30-60s tracing. Falls back to eager "
+                         "(with a WARNING) if compile raises.")
     # Phase 8: early stopping (off by default; opt-in per stage).
     ap.add_argument("--early-stop", action="store_true",
                     help="Abort the stage when val_loss has plateaued.")
@@ -194,6 +198,7 @@ def main() -> None:
         micro_batch_size=1, grad_accum_steps=args.grad_accum_steps, log_every=100,
         lambda_text=1.0, target_h=args.page_h, target_w=args.page_w, pad_multiple=32,
         device="cuda", autocast_dtype=torch.bfloat16, gradient_checkpointing=grad_ckpt,
+        compile_model=args.compile_model,
         freeze_decoder=True, adam_betas=(0.9, 0.98), adam_eps=1e-6,
         label_smoothing=0.1,
         # A4: keep a small LR through the cosine tail.
