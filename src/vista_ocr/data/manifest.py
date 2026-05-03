@@ -115,14 +115,15 @@ def _parse_record(rec: dict[str, Any], line_no: int) -> tuple[str, dict]:
     return rec["image"], parsed
 
 
-def iter_manifest(path: Path | str) -> Iterator[Sample]:
-    """Yield :class:`Sample` per manifest line.
+def iter_manifest_records(path: Path | str) -> Iterator[tuple[Sample, dict[str, Any]]]:
+    """Yield ``(Sample, raw_dict)`` per manifest line.
 
-    ``image`` paths are resolved relative to the manifest's directory
-    so manifests are portable. Absolute paths are honoured as-is.
-    Validation is strict: any malformed record halts iteration with
-    ``ValueError`` (do not eat errors -- a noisy schema violation is
-    more useful than a silently-skipped doc).
+    Use this when a caller needs to know which optional fields were
+    present in the source record (e.g., the eval verb dispatches
+    detection metrics on whether ``bboxes`` was supplied vs
+    synthesised by :func:`iter_manifest`'s fallback). The Sample
+    object alone can't distinguish "operator omitted bboxes" from
+    "operator passed bboxes that happened to project to (0,0,0,0)".
     """
     path = Path(path)
     base = path.parent
@@ -144,7 +145,7 @@ def iter_manifest(path: Path | str) -> Iterator[Sample]:
             with Image.open(image_path) as img:
                 img = img.convert("L")
                 img.load()
-            yield Sample(
+            sample = Sample(
                 image=img,
                 lines=parsed["lines"],
                 task=parsed["task"],
@@ -152,6 +153,24 @@ def iter_manifest(path: Path | str) -> Iterator[Sample]:
                 query_bbox=parsed["query_bbox"],
                 source=f"manifest:{path.name}:{line_no}",
             )
+            yield sample, rec
+
+
+def iter_manifest(path: Path | str) -> Iterator[Sample]:
+    """Yield :class:`Sample` per manifest line.
+
+    ``image`` paths are resolved relative to the manifest's directory
+    so manifests are portable. Absolute paths are honoured as-is.
+    Validation is strict: any malformed record halts iteration with
+    ``ValueError`` (do not eat errors -- a noisy schema violation is
+    more useful than a silently-skipped doc).
+
+    Callers that also need access to the raw record (e.g. to detect
+    which optional fields were present in the source JSONL) should
+    use :func:`iter_manifest_records` instead.
+    """
+    for sample, _rec in iter_manifest_records(path):
+        yield sample
 
 
 def write_manifest(records: Iterable[dict], path: Path | str) -> int:

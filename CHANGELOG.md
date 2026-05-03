@@ -4,6 +4,48 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — `vista-ocr eval` paper-relatable metric blocks
+
+`vista-ocr eval --manifest` now produces text-detection metrics
+(DetEval P/R/F1, Area-F1, AP @ IoU 0.5-0.8) when the manifest carries
+``bboxes`` per record, and AP @ CER thresholds when
+``--cer-ap-thresholds`` is set -- the eval-side metrics paper §4.1
+and §4.2 report. Recognition-only manifests are unaffected (sidecar
+key set is byte-for-byte identical to pre-G2).
+
+### Added
+
+- ``--bbox-expand-px N`` flag. Expands PREDICTED boxes by ``N`` px on
+  each side before detection scoring; ground truth is never expanded.
+  Paper §4.1.1 reports SROIE detection numbers with +1/+2 px
+  expansion (the model produces tighter boxes than GT). Default 0.
+  Asymmetry contract is enforced by 4 tests including the inverse
+  case "even at +50 px, F1 cannot exceed 1.0" -- catches a future
+  refactor that accidentally expands GT too.
+- ``--cer-ap-thresholds`` flag. Comma-separated list of CER
+  thresholds; opt-in to the region-OCR AP-at-CER block.
+- ``vista_ocr.eval.sidecar.EvalSidecar`` -- single source of truth
+  for the JSON sidecar shape. Optional metric blocks
+  (``detection``, ``cer_ap``) drop out of the dumped JSON when not
+  applicable, so pre-G2 readers keep working.
+- ``per_doc_cer`` and ``cer_ap`` in
+  ``vista_ocr.eval.metrics_recognition``. ``expand_box`` in
+  ``vista_ocr.eval.metrics_detection``.
+- Strict manifest homogeneity: the field-set of the first record
+  IS the contract; any subsequent record with a different field-set
+  is rejected with a clear error. Catches "I accidentally
+  interleaved two benchmarks in one manifest."
+
+### Tests
+
+19 new tests on the metric primitives (DetEval split / merged /
+disjoint at strict and lenient ``tr``; AP@IoU multi-pred and
+intermediate-IoU; CER-AP monotonicity; edge cases on empty inputs
+and degenerate boxes); 9 new tests on the eval verb's wiring
+(back-compat sidecar key set, detection block populated, the four
+bbox-expand asymmetry cases, heterogeneity rejection, CER-AP block
+optional). Full suite 431 passed.
+
 ## 2026-05-03 — `vista-ocr` CLI + manifest-driven eval/finetune
 
 The package now installs cleanly via pip with a `[project.scripts]`
