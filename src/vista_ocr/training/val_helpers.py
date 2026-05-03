@@ -22,6 +22,7 @@ from torch import nn
 from vista_ocr.data.collate import Batch, collate
 from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
 from vista_ocr.data.preprocess import PreprocessConfig
+from vista_ocr.data.sroie import SroieConfig, iter_sroie
 from vista_ocr.data.types import Sample
 from vista_ocr.tokenizer.tokenizer import VistaTokenizer
 from vista_ocr.training.losses import combined_loss
@@ -60,6 +61,27 @@ def pdfa_val_batches(
     """``val_batches_with_refs`` plugged into a single PDFA shard."""
     return val_batches_with_refs(
         iter_pdfa(PdfaConfig(shards=[str(val_shard)])),
+        tokenizer,
+        pre_cfg,
+    )
+
+
+def sroie_val_batches(
+    root: Path,
+    tokenizer: VistaTokenizer,
+    pre_cfg: PreprocessConfig,
+    *,
+    split: str = "test",
+) -> Iterator[ValItem]:
+    """``val_batches_with_refs`` plugged into a SROIE split.
+
+    ``root`` must point at the flat directory layout produced by
+    ``scripts/datasets/setup_sroie.sh`` (i.e. ``<root>/{train,test}/<id>.{jpg,txt}``).
+    Default split is ``test`` because finetune chains use it for
+    ckpt_best selection on the held-out half of the dataset.
+    """
+    return val_batches_with_refs(
+        iter_sroie(SroieConfig(root=Path(root), split=split)),
         tokenizer,
         pre_cfg,
     )

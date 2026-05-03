@@ -4,6 +4,33 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — SROIE finetune chain scaffold
+
+Per-benchmark finetune + eval entry points now have their own
+home (`scripts/benchmarks/`), parallel to the per-benchmark dataset
+adapters in `scripts/datasets/`. The top-level `scripts/` namespace
+stays "generic + pretraining" -- no benchmark-specific glue at the
+root.
+
+### Added
+
+- **`scripts/benchmarks/sroie/`** -- the SROIE 2019 finetune chain.
+  - ``run.py`` loads a pretrained ckpt (typically
+    ``checkpoints/stage3/ckpt_best.pt``), trains on the SROIE train
+    split with val on the test split, ckpt_best on val_word_f1.
+  - ``eval.py`` decodes the full SROIE test split with greedy +
+    SROIE-style word-set P/R/F1 (``word_exact_prf``), writes a
+    JSON sidecar suitable for pasting into BENCHMARKS.md.
+  - ``chain.sh`` orchestrates ``run.py`` then ``eval.py`` in one
+    shot; defaults to a paper-style short, low-LR finetune
+    (5K steps, lr=1e-5, grad-accum 4, augment on, early-stop on,
+    select on val_word_f1).
+- **`scripts/benchmarks/README.md`** documents the convention so
+  the next benchmark (IAM, FUNSD, ...) drops in cleanly.
+- **`vista_ocr.training.val_helpers.sroie_val_batches`** -- mirrors
+  ``pdfa_val_batches`` for SROIE; unit-tested in
+  ``tests/test_maurdor_sroie.py``.
+
 ## 2026-05-03 — Eval methodology, round 2 (DS review blockers)
 
 Three blockers from a data-scientist review. This entry is Phase 1

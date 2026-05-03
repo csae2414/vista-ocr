@@ -70,3 +70,52 @@ def test_sroie_iter_reads_train_split(tmp_path: Path):
     out = list(iter_sroie(SroieConfig(root=root, split="train")))
     assert len(out) == 1
     assert out[0].lines[0].text == "STORE NAME"
+
+
+def test_sroie_val_batches_yields_batch_and_ref(tmp_path: Path):
+    """SROIE finetune chain wires val on the test split via
+    ``sroie_val_batches`` (mirrors ``pdfa_val_batches``). Smoke-test
+    that each yielded item is a (Batch, ref_str) pair where ``ref_str``
+    is the whitespace-joined line text."""
+    from vista_ocr.data.preprocess import PreprocessConfig
+    from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
+    from vista_ocr.tokenizer.build_spm import train_spm
+    from vista_ocr.tokenizer.tokenizer import (
+        VistaTokenizer,
+        list_special_and_spatial_tokens,
+    )
+    from vista_ocr.training.val_helpers import sroie_val_batches
+
+    root = tmp_path / "sroie"
+    test = root / "test"
+    test.mkdir(parents=True)
+    Image.new("L", (128, 64), 255).save(test / "doc.jpg")
+    (test / "doc.txt").write_text(
+        "0,0,40,0,40,10,0,10,FOO\n"
+        "0,20,40,20,40,30,0,30,BAR\n"
+    )
+
+    grid = SpatialGrid(canvas_h=64, canvas_w=64, quantizer_px=4, scheme="original")
+    spm_dir = tmp_path / "spm"
+    spm_dir.mkdir()
+    corpus = spm_dir / "c.txt"
+    corpus.write_text(
+        (
+            "hello world FOO BAR baz qux quux corge grault garply\n"
+            "abc def ghi jkl mno pqr stu vwx yz\n"
+            "the quick brown fox jumps over the lazy dog\n"
+            "Sphinx of black quartz judge my vow\n"
+        ) * 200,
+        encoding="utf-8",
+    )
+    train_spm(corpus, spm_dir / "tr", vocab_size=120,
+              user_symbols=list_special_and_spatial_tokens(grid))
+    tokenizer = VistaTokenizer(spm_dir / "tr.model", grid)
+    pre_cfg = PreprocessConfig(target_h=64, target_w=64, pad_multiple=32)
+
+    items = list(sroie_val_batches(root, tokenizer, pre_cfg, split="test"))
+    assert len(items) == 1
+    batch, ref = items[0]
+    assert ref == "FOO BAR"
+    # batch is a real Batch, not just a tensor -- it has the canonical fields.
+    assert hasattr(batch, "images") and hasattr(batch, "labels")
