@@ -11,6 +11,11 @@ Bounding-box value object
 
 .. automodule:: vista_ocr.data.bbox
 
+On-disk sample cache
+--------------------
+
+.. automodule:: vista_ocr.data.cache
+
 Preprocessing
 -------------
 
