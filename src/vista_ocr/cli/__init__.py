@@ -38,6 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         eval_manifest as _eval,
         finetune_manifest as _finetune,
         infer_folder as _infer,
+        stage1 as _stage1,
+        stage2 as _stage2,
+        stage3 as _stage3,
     )
 
     parser = argparse.ArgumentParser(
@@ -54,6 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
     _attach(sub, "finetune", _finetune, "Finetune from a pretrained ckpt + manifest pair.")
     _attach(sub, "infer", _infer, "Decode every image in a folder (no GT).")
     _attach(sub, "cache", _cache, "Pre-render dataset samples to a geometry-bound cache.")
+
+    # `stage` is itself a subverb with three sub-actions (1/2/3).
+    stage_parser = sub.add_parser(
+        "stage", help="Pretraining stages (1/2/3).",
+        description="Pretraining stage entry points.",
+    )
+    stage_sub = stage_parser.add_subparsers(dest="stage_n", metavar="<stage>")
+    _attach(stage_sub, "1", _stage1, "Stage 1: calibration (frozen decoder).")
+    _attach(stage_sub, "2", _stage2, "Stage 2: multimodal pretraining.")
+    _attach(stage_sub, "3", _stage3, "Stage 3: multitask pretraining.")
 
     return parser
 
