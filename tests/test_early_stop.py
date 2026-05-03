@@ -31,7 +31,8 @@ from vista_ocr.training.callbacks import (
 def test_no_abort_while_improving():
     cfg = EarlyStopConfig(enabled=True, patience=3, min_delta=0.01,
                           smooth_window=3, warmup_vals=0,
-                          spike_threshold=999.0, spike_consecutive=999)
+                          spike_threshold=999.0, spike_consecutive=999,
+                          metric="val_loss")
     state = EarlyStopState()
     for v in [10.0, 9.0, 8.0, 7.0, 6.0]:
         stop, reason = early_stop_decision(v, state, cfg)
@@ -85,7 +86,8 @@ def test_spike_detection_aborts_before_patience():
     """F4: a sharp degradation triggers spike abort before patience."""
     cfg = EarlyStopConfig(enabled=True, patience=999, min_delta=0.01,
                           smooth_window=3, warmup_vals=2,
-                          spike_threshold=0.5, spike_consecutive=2)
+                          spike_threshold=0.5, spike_consecutive=2,
+                          metric="val_loss")
     state = EarlyStopState()
     # Establish a low smoothed_best.
     for v in [4.0, 3.5, 3.0]:
@@ -101,7 +103,8 @@ def test_spike_detection_aborts_before_patience():
 def test_spike_counter_resets_on_recovery():
     cfg = EarlyStopConfig(enabled=True, patience=999, min_delta=0.01,
                           smooth_window=3, warmup_vals=2,
-                          spike_threshold=0.5, spike_consecutive=3)
+                          spike_threshold=0.5, spike_consecutive=3,
+                          metric="val_loss")
     state = EarlyStopState()
     for v in [4.0, 3.5, 3.0]:
         early_stop_decision(v, state, cfg)

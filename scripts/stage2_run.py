@@ -85,6 +85,9 @@ def main() -> None:
                     help="B1: time-constant of the dropout schedule.")
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches.")
+    ap.add_argument("--select-on", default="val_word_f1",
+                    choices=("val_loss", "val_word_f1"),
+                    help="DS-fix P3: ckpt_best + early-stop metric.")
     ap.add_argument("--decode-n-best", type=int, default=256,
                     help="DS-fix Phase 2: second-pass eval on ckpt_best "
                          "candidates with this many batches. 0 disables.")
@@ -179,6 +182,7 @@ def main() -> None:
         dropout_T=args.dropout_T,
         checkpoint=CheckpointConfig(
             out_dir=args.out, save_every=args.ckpt_every, keep_last=3,
+            select_on=args.select_on,
         ),
         val=ValConfig(every=args.val_every, max_batches=args.val_batches),
         val_batches_factory=val_batches_factory,
@@ -193,6 +197,7 @@ def main() -> None:
                 patience=args.early_stop_patience,
                 min_delta=args.early_stop_min_delta,
                 warmup_vals=args.early_stop_warmup,
+                metric=args.select_on,
             )
             if args.early_stop else None
         ),

@@ -156,6 +156,29 @@ Result JSON has CER, WER, word-F1, empty-fraction, decoded-batch
 count, and the underlying ckpt step. Paste these into the
 "Diagnostic ablation table" in `BENCHMARKS.md`.
 
+### What `ckpt_best.pt` means
+
+Since 2026-05-03, ``ckpt_best.pt`` is selected on **val_word_f1**
+(higher-is-better) measured on the second-pass eval at
+``--decode-n-best`` samples (default 256). The legacy val_loss
+selector is opt-in via ``--select-on val_loss``. The selection
+protocol is:
+
+1. Every val pass scores ``decode_n=5`` samples (cheap; for the
+   per-step log line).
+2. When the cheap word-F1 *appears* to improve over ``best_metric``,
+   a second eval pass scores ``--decode-n-best`` samples on the same
+   val shard.
+3. ckpt_best is written *only* if the second-pass word-F1 still
+   beats ``best_metric``. A noisy cheap-signal spike that the
+   second pass disagrees with logs ``BEST_CANDIDATE_REJECTED:`` and
+   skips the save (so a future real improvement is not locked out
+   by the noise).
+
+The structured ``BEST_CANDIDATE:`` line written on every accepted
+save carries the persisted (n=256) CER / WER / word-F1 numbers --
+those are what BENCHMARKS rows are read off, not the per-val n=5.
+
 ## 5. Live monitoring (optional)
 
 A side-process tailer parses the supervisor log into JSONL +

@@ -11,11 +11,39 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import torch
 from torch import nn
 
 LOG = logging.getLogger(__name__)
+
+
+SelectMetric = Literal["val_loss", "val_word_f1"]
+
+
+def metric_is_better(value: float, best: float, metric: SelectMetric) -> bool:
+    """Direction-aware comparison for ``ckpt_best`` and early-stop.
+
+    val_loss is lower-is-better; val_word_f1 is higher-is-better.
+    Centralised so checkpoint selection and early-stop can't disagree
+    on direction.
+    """
+    if metric == "val_loss":
+        return value < best
+    if metric == "val_word_f1":
+        return value > best
+    raise ValueError(f"unknown selection metric: {metric!r}")
+
+
+def metric_initial_best(metric: SelectMetric) -> float:
+    """Initial ``best`` value such that the first observation always
+    counts as an improvement."""
+    if metric == "val_loss":
+        return float("inf")
+    if metric == "val_word_f1":
+        return float("-inf")
+    raise ValueError(f"unknown selection metric: {metric!r}")
 
 
 @dataclass
@@ -25,11 +53,19 @@ class CheckpointConfig:
     keep_last: int = 3
     save_best: bool = True
     # When True, also write ``ckpt_final.pt`` at the end of the training
-    # loop alongside ``ckpt_best.pt``. ``ckpt_best.pt`` is val-loss-
-    # selected (which we have evidence can be misleading); the final
-    # ckpt captures whatever state training ended at, which downstream
-    # evals may want for sanity checks.
+    # loop alongside ``ckpt_best.pt``. ``ckpt_best.pt`` is metric-
+    # selected (see ``select_on``); the final ckpt captures whatever
+    # state training ended at, which downstream evals may want for
+    # sanity checks.
     save_final: bool = True
+    # DS-fix Phase 3: ckpt_best selection criterion. The 2026-05-02
+    # PDFA hold-out diagnosis showed val_loss can be misleading when
+    # the model has weak image conditioning -- the language-model
+    # prior dominates so val_loss reflects the prior, not OCR
+    # quality. word-F1 from the second-pass eval (``val_decode_n_best``,
+    # default 256 in stage scripts) is the recommended criterion.
+    # ``val_loss`` is kept for tests / back-compat with old configs.
+    select_on: SelectMetric = "val_word_f1"
 
 
 @dataclass
@@ -68,11 +104,17 @@ class EarlyStopConfig:
     # accumulated. Avoids premature abort from the first noisy val
     # passes after a stage transition.
     warmup_vals: int = 5
-    # Spike-detection: raw val_loss exceeding ``smoothed_best +
-    # spike_threshold`` for ``spike_consecutive`` vals -> abort.
-    # Catches a fast collapse the smoothed signal would otherwise mask.
+    # Spike-detection threshold (degradation that exceeds the
+    # smoothed-best by this much for ``spike_consecutive`` vals -> abort).
+    # For ``metric=val_loss`` "exceed" means *higher* than smoothed_best;
+    # for ``metric=val_word_f1`` it means *lower*. Catches a fast collapse
+    # the smoothed signal would otherwise mask.
     spike_threshold: float = 0.5
     spike_consecutive: int = 3
+    # DS-fix Phase 3: which metric to watch. Defaults to val_word_f1 to
+    # match CheckpointConfig.select_on. ``val_loss`` is kept for
+    # back-compat / tests where the cheap loss is the only signal.
+    metric: SelectMetric = "val_word_f1"
 
 
 @dataclass
@@ -132,14 +174,20 @@ def early_stop_decision(
     state: EarlyStopState,
     cfg: EarlyStopConfig,
 ) -> tuple[bool, str | None]:
-    """Update ``state`` in place with a new val_loss; return
+    """Update ``state`` in place with a new metric value; return
     ``(should_stop, reason)``.
+
+    The first parameter is named ``val_loss`` for back-compat -- in
+    practice it's whichever metric ``cfg.metric`` selects (val_loss or
+    val_word_f1). Direction is taken from ``cfg.metric``: lower-is-
+    better for val_loss, higher-is-better for val_word_f1.
 
     Reasons:
       * ``"patience_exceeded"`` -- smoothed best didn't improve for
         ``cfg.patience`` consecutive vals.
-      * ``"spike_detected"`` -- raw val_loss > ``smoothed_best +
-        cfg.spike_threshold`` for ``cfg.spike_consecutive`` vals.
+      * ``"spike_detected"`` -- raw value degraded past
+        ``smoothed_best ± cfg.spike_threshold`` (sign chosen per
+        direction) for ``cfg.spike_consecutive`` vals.
 
     The check is always applied AFTER ``state`` is updated, but never
     fires before ``cfg.warmup_vals`` vals have been observed.
@@ -147,15 +195,33 @@ def early_stop_decision(
     state.val_history.append(val_loss)
     state.n_vals_seen += 1
 
+    higher_is_better = cfg.metric == "val_word_f1"
     smoothed = _ema(state.val_history, cfg.smooth_window)
-    if smoothed + cfg.min_delta < state.smoothed_best:
+
+    # First val ever observed: bootstrap smoothed_best regardless of
+    # direction so the higher-is-better init (-inf in spirit) and the
+    # legacy lower-is-better init (inf) both work without special
+    # cases at construction time.
+    if state.n_vals_seen == 1:
         state.smoothed_best = smoothed
         state.no_improve_counter = 0
     else:
-        state.no_improve_counter += 1
+        if higher_is_better:
+            improved = smoothed - cfg.min_delta > state.smoothed_best
+        else:
+            improved = smoothed + cfg.min_delta < state.smoothed_best
+        if improved:
+            state.smoothed_best = smoothed
+            state.no_improve_counter = 0
+        else:
+            state.no_improve_counter += 1
 
-    # Spike detection on RAW (not smoothed) value.
-    if val_loss > state.smoothed_best + cfg.spike_threshold:
+    # Spike detection on RAW (not smoothed) value, direction-aware.
+    if higher_is_better:
+        spiked = val_loss < state.smoothed_best - cfg.spike_threshold
+    else:
+        spiked = val_loss > state.smoothed_best + cfg.spike_threshold
+    if spiked:
         state.spike_counter += 1
     else:
         state.spike_counter = 0

@@ -43,6 +43,13 @@ only the OCR+layout task while stage-3 trains on a four-task mix.
 > 0119 *before* the split was locked, so for them shard 0119 was the
 > training-time val shard -- **not** a strict held-out test set. Rows
 > generated after this date are strict held-out.
+>
+> **Selection note (2026-05-03 onward).** ``ckpt_best.pt`` is now
+> selected on **val_word_f1** at n=256 (gate-then-truth protocol; see
+> the operator runbook). The numbers below were ``ckpt_best``-selected
+> on val_loss at n=20, which the same-day diagnosis showed can be
+> misleading when image conditioning is weak. Re-running the eval
+> against a future ``ckpt_best.pt`` will exercise the new selection.
 
 Long-form eval on the locked PDFA test shard (0119), 100 batches. Run with:
 

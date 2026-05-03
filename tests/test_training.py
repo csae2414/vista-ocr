@@ -7,6 +7,7 @@ CPU before we touch the GPU VM.
 from __future__ import annotations
 
 from itertools import cycle, islice
+from pathlib import Path
 
 import pytest
 import torch
@@ -458,12 +459,14 @@ def _flat_val_train_cfg(out_dir, *, warmup_vals, patience, val_every=1):
         target_h=128, target_w=128, pad_multiple=32,
         checkpoint=CheckpointConfig(
             out_dir=out_dir, save_every=999, keep_last=3,
+            select_on="val_loss",  # this helper drives a val_loss curve
         ),
         val=ValConfig(every=val_every, max_batches=1),
         val_batches_factory=lambda: iter([0]),
         val_loss_fn=loss_fn,
         early_stop=EarlyStopConfig(
             enabled=True,
+            metric="val_loss",   # this helper drives a flat val_loss curve
             patience=patience,
             min_delta=0.01,
             smooth_window=3,
@@ -718,3 +721,403 @@ def test_ckpt_best_no_second_pass_when_decode_n_best_zero(
         best, model=model, optimizer=make_optimizer(model, cfg),
     )
     assert "best_candidate" not in payload.extra
+
+
+# ---------- DS-fix Phase 3: select_on=val_word_f1 + EARLY_STOP metric -------
+#
+# 4 tests: (a) word-F1 selection picks a *different* ckpt than val_loss
+# in a synthesised run where the two diverge; (b) early-stop on
+# val_word_f1 fires when word_f1 plateaus; (c) resume reads an old
+# val_loss-keyed checkpoint without crashing; (d) the EARLY_STOP: log
+# line carries metric=<name> so the tailer parses it.
+
+def _diverging_cfg(out_dir, *, select_on, decreasing_loss=False, decreasing_word_f1=False):
+    """A train cfg where val_loss and val_word_f1 disagree.
+
+    ``loss_fn`` and ``decode_fn`` are stateful so we can drive the two
+    metrics in different directions per call; useful to verify
+    select_on actually changes which step gets saved as ckpt_best.
+    """
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        ValConfig,
+    )
+
+    state = {"loss": 1.0, "f1_call": 0}
+
+    def loss_fn(_model, _batch):
+        v = state["loss"]
+        if decreasing_loss:
+            state["loss"] *= 0.5  # 1.0, 0.5, 0.25, ...
+        return torch.tensor(v)
+
+    refs = ["aaa bbb ccc"] * 50
+
+    def factory():
+        return iter([(i, refs[i % len(refs)]) for i in range(40)])
+
+    def decode_fn(_model, batch):
+        _i, gt = batch
+        # Per-call: alternate "all wrong" vs "all right" so that
+        # val_word_f1 can be driven independently of val_loss.
+        state["f1_call"] += 1
+        if decreasing_word_f1:
+            # First call -> perfect; subsequent calls -> wrong, so the
+            # average word_f1 declines with each val pass.
+            return [gt], [gt if state["f1_call"] <= 1 else "zzz"]
+        # Default: every call returns perfect.
+        return [gt], [gt]
+
+    return TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=out_dir, save_every=999, keep_last=3,
+            select_on=select_on,
+        ),
+        val=ValConfig(every=1, max_batches=4),
+        val_batches_factory=factory,
+        val_loss_fn=loss_fn,
+        val_decode_fn=decode_fn,
+        val_decode_n=4,
+        val_decode_n_best=0,   # keep this test focused on selection direction
+    )
+
+
+def test_select_on_word_f1_picks_different_ckpt_than_val_loss(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    """DS-fix P3: with select_on=val_word_f1, ckpt_best is chosen on
+    higher word_f1; with select_on=val_loss it is chosen on lower
+    val_loss. We construct a run where val_loss is monotonically
+    decreasing while word_f1 monotonically *also* decreases (loss
+    misleads). The two configs must therefore pick different best
+    steps."""
+    import copy
+
+    from vista_ocr.training.callbacks import load_checkpoint
+    from vista_ocr.training.train_loop import make_optimizer
+
+    # --- Run 1: select_on=val_loss
+    out_loss = tmp_path / "loss"
+    out_loss.mkdir()
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg_loss = _diverging_cfg(
+        out_loss, select_on="val_loss",
+        decreasing_loss=True, decreasing_word_f1=True,
+    )
+    train(model, list(islice(cycle([sample]), 20)),
+          tokenizer, cfg_loss, max_steps=5)
+    p_loss = load_checkpoint(
+        out_loss / "ckpt_best.pt", model=model,
+        optimizer=make_optimizer(model, cfg_loss),
+    )
+
+    # --- Run 2: select_on=val_word_f1
+    out_f1 = tmp_path / "f1"
+    out_f1.mkdir()
+    model = copy.deepcopy(tiny_model)
+    cfg_f1 = _diverging_cfg(
+        out_f1, select_on="val_word_f1",
+        decreasing_loss=True, decreasing_word_f1=True,
+    )
+    train(model, list(islice(cycle([sample]), 20)),
+          tokenizer, cfg_f1, max_steps=5)
+    p_f1 = load_checkpoint(
+        out_f1 / "ckpt_best.pt", model=model,
+        optimizer=make_optimizer(model, cfg_f1),
+    )
+
+    # Loss-selection picks the *latest* improving step (loss keeps
+    # dropping, so every step beats the prior). word_f1-selection
+    # picks the *first* step (the only one with perfect predictions);
+    # subsequent val_word_f1 values are zero and do not improve.
+    assert p_loss.step > p_f1.step, (
+        f"select_on disagreement expected: loss picked step {p_loss.step}, "
+        f"word_f1 picked step {p_f1.step}"
+    )
+    # Selection metadata reflects the chosen criterion.
+    assert p_loss.extra["best_metric_name"] == "val_loss"
+    assert p_f1.extra["best_metric_name"] == "val_word_f1"
+
+
+def test_early_stop_on_val_word_f1_fires_on_plateau(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """DS-fix P3: with EarlyStopConfig.metric=val_word_f1 and a flat
+    perfect-decode (word_f1 stuck at 1.0) the smoothed signal does not
+    *strictly* improve, so patience exhausts and the loop aborts."""
+    import copy
+    import logging
+
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        EarlyStopConfig,
+        ValConfig,
+    )
+
+    def loss_fn(_model, _batch):
+        # Loss declines so the val_loss-based path would never abort.
+        # That's the point: only val_word_f1 is plateau'd, so an
+        # early-stop tied to val_word_f1 is the one that fires.
+        return torch.tensor(0.5)
+
+    refs = ["aaa bbb ccc"] * 50
+
+    def factory():
+        return iter([(i, refs[i % len(refs)]) for i in range(40)])
+
+    def decode_fn(_model, batch):
+        _i, gt = batch
+        return [gt], [gt]   # always perfect -> word_f1 stuck at 1.0
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(out_dir=tmp_path, save_every=999, keep_last=3),
+        val=ValConfig(every=1, max_batches=2),
+        val_batches_factory=factory,
+        val_loss_fn=loss_fn,
+        val_decode_fn=decode_fn,
+        val_decode_n=2,
+        early_stop=EarlyStopConfig(
+            enabled=True, metric="val_word_f1",
+            patience=2, min_delta=0.01, smooth_window=3,
+            warmup_vals=1, spike_threshold=10.0, spike_consecutive=999,
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        history = train(
+            model, list(islice(cycle([sample]), 50)),
+            tokenizer, cfg, max_steps=20,
+        )
+
+    assert len(history) <= 10, (
+        f"word_f1 plateau should have fired early-stop; saw {len(history)} steps"
+    )
+    es_records = [
+        r for r in caplog.records if r.message.startswith("EARLY_STOP: ")
+    ]
+    assert es_records, "Expected an EARLY_STOP: log line"
+    assert "metric=val_word_f1" in es_records[0].message
+
+
+def test_early_stop_log_line_carries_metric_name(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """DS-fix P3 / F6: the structured EARLY_STOP: log line must carry
+    metric=<name> so the side-process tailer parses it. (The flat-
+    val-loss path; covers the val_loss branch of the EARLY_STOP log.)"""
+    import copy
+    import logging
+
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        EarlyStopConfig,
+        ValConfig,
+    )
+
+    def loss_fn(_model, _batch):
+        return torch.tensor(1.234)
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=tmp_path, save_every=999, keep_last=3,
+            select_on="val_loss",
+        ),
+        val=ValConfig(every=1, max_batches=1),
+        val_batches_factory=lambda: iter([0]),
+        val_loss_fn=loss_fn,
+        early_stop=EarlyStopConfig(
+            enabled=True, metric="val_loss",
+            patience=2, min_delta=0.01, smooth_window=3, warmup_vals=1,
+            spike_threshold=10.0, spike_consecutive=999,
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        train(model, list(islice(cycle([sample]), 50)),
+              tokenizer, cfg, max_steps=20)
+
+    es = [r for r in caplog.records if r.message.startswith("EARLY_STOP: ")]
+    assert es
+    assert "metric=val_loss" in es[0].message
+
+
+def test_resume_reads_legacy_val_loss_only_checkpoint(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """DS-fix P3 back-compat: an old checkpoint that has only the
+    legacy ``best_val_loss`` top-level field (no ``best_metric`` /
+    ``best_metric_name`` in extras) must resume cleanly. With the new
+    default ``select_on=val_word_f1``, ``best_metric`` resets to the
+    initial best (-inf), but the resume itself must not crash and
+    must log "Resumed from"."""
+    import copy
+    import logging
+
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        save_checkpoint,
+    )
+    from vista_ocr.training.train_loop import make_optimizer
+
+    model = copy.deepcopy(tiny_model)
+    legacy_path = tmp_path / "ckpt_legacy.pt"
+    opt = make_optimizer(model, TrainConfig())
+    # Legacy extras dict: no best_metric / best_metric_name keys.
+    save_checkpoint(
+        legacy_path,
+        step=2, model=model, optimizer=opt,
+        best_val_loss=3.14,
+        extra={"val_loss": 3.14},
+    )
+
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    out_dir = tmp_path / "resume"
+    out_dir.mkdir()
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=out_dir, save_every=999, keep_last=3,
+            select_on="val_word_f1",
+        ),
+        resume_from=legacy_path,
+    )
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        train(model, [sample] * 6, tokenizer, cfg, max_steps=4)
+
+    # Smoke: the resume happened (log line emitted) and the loop
+    # didn't crash on missing best_metric / best_metric_name keys.
+    assert any(
+        "Resumed from" in r.message and "best_val_word_f1" in r.message
+        for r in caplog.records
+    ), "Resume log must mention the new selection metric for clarity"
+
+
+def test_second_pass_rejects_gate_noise_spike(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path, caplog,
+):
+    """DS-fix P3 noise filter: once best_metric is established, a
+    *subsequent* noisy gate spike must be rejected when the second
+    pass disagrees. Without the filter, the noisy gate would write
+    ckpt_best AND ratchet best_metric up, locking out future real
+    improvements."""
+    import copy
+    import logging
+
+    from vista_ocr.training.callbacks import (
+        CheckpointConfig,
+        EarlyStopState,
+        ValConfig,
+        load_checkpoint,
+    )
+    from vista_ocr.training.train_loop import make_optimizer
+
+    # decode_fn pattern, keyed on global call index. Per val pass we
+    # see ``val_decode_n + val_decode_n_best`` calls (1 + 8 = 9).
+    #   val pass 1, calls  1..9  : all wrong. cheap=0.0, truth=0.0.
+    #     -> ckpt_best is written (0 > -inf), best_metric = 0.0.
+    #   val pass 2, call  10     : cheap=1.0 (perfect) -> gate fires.
+    #   val pass 2, calls 11..18 : all wrong -> truth=0.0.
+    #     metric_is_better(0.0, 0.0) is False -> REJECTED. best_metric
+    #     stays at 0.0; ckpt_best NOT overwritten with the noise.
+    state = {"calls": 0}
+
+    def decode_fn(_model, batch):
+        _i, gt = batch
+        state["calls"] += 1
+        # call 10 is the *only* perfect prediction (cheap pass of
+        # val 2). Everything else is wrong.
+        return [gt], [gt if state["calls"] == 10 else "zzz"]
+
+    def loss_fn(_model, _batch):
+        return torch.tensor(0.5)
+
+    refs = ["aaa bbb ccc"] * 50
+
+    def factory():
+        return iter([(i, refs[i % len(refs)]) for i in range(40)])
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=tmp_path, save_every=999, keep_last=3,
+            select_on="val_word_f1",
+        ),
+        val=ValConfig(every=1, max_batches=1),
+        val_batches_factory=factory,
+        val_loss_fn=loss_fn,
+        val_decode_fn=decode_fn,
+        val_decode_n=1,
+        val_decode_n_best=8,
+    )
+
+    with caplog.at_level(logging.INFO, logger="vista_ocr.training.train_loop"):
+        train(model, list(islice(cycle([sample]), 20)),
+              tokenizer, cfg, max_steps=3)
+
+    # The structured rejection log line must land on val pass 2.
+    assert any(
+        "BEST_CANDIDATE_REJECTED:" in r.message for r in caplog.records
+    ), "noise-filter rejection must log a structured line"
+
+    # ckpt_best.pt exists from val pass 1 (best_metric=0.0). The
+    # critical invariant: it was NOT overwritten by val pass 2's
+    # noisy gate, so the persisted truth_value stays at 0.0 (from
+    # pass 1) -- not 1.0 (the gate spike).
+    best = tmp_path / "ckpt_best.pt"
+    assert best.exists()
+    payload = load_checkpoint(
+        best, model=model, optimizer=make_optimizer(model, cfg),
+    )
+    assert payload.extra["best_metric_name"] == "val_word_f1"
+    assert payload.extra["best_metric"] == pytest.approx(0.0), (
+        "best_metric must reflect the val pass 1 truth (0.0), not the "
+        "rejected gate spike from val pass 2 (would be 1.0)"
+    )
+
+
+def test_train_refuses_word_f1_selection_without_decode():
+    """DS-fix P3 startup validation: ``select_on=val_word_f1`` with
+    ``decode_n=0`` would silently never write ckpt_best.pt because
+    the gate value is None on every val pass. Hard-fail at startup."""
+    from vista_ocr.training.callbacks import CheckpointConfig, ValConfig
+
+    cfg = TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=10,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=Path("/tmp/should_never_be_written"),
+            save_every=999, keep_last=3,
+            select_on="val_word_f1",
+        ),
+        val=ValConfig(every=1, max_batches=1),
+        val_batches_factory=lambda: iter([0]),
+        val_loss_fn=lambda _m, _b: torch.tensor(0.5),
+        # val_decode_fn left as None on purpose
+        val_decode_n=0,
+    )
+    # The model + tokenizer / sample stream are unused -- we expect
+    # the validation error before any training step.
+    from vista_ocr.training.train_loop import train as _train
+    with pytest.raises(ValueError, match="select_on='val_word_f1'"):
+        _train(model=None, sample_stream=iter([]), tokenizer=None, cfg=cfg)

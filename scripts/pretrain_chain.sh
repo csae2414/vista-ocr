@@ -38,6 +38,10 @@
 #                                       many batches; 0 disables. The
 #                                       per-val log line still uses
 #                                       --decode-n=5)
+#   SELECT_ON           default val_word_f1  (DS-fix P3: ckpt_best +
+#                                       early-stop selection metric.
+#                                       Set to "val_loss" for the
+#                                       legacy lower-is-better path.)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -85,6 +89,10 @@ COMPILE="${COMPILE:-0}"
 # reasonable default (per-val cost stays at decode_n=5; second pass
 # fires only on val_loss improvement, which is rare).
 DECODE_N_BEST="${DECODE_N_BEST:-256}"
+# DS-fix P3: ckpt_best + early-stop selection metric. word-F1 is
+# higher-is-better and what BENCHMARKS rows compare; val_loss is the
+# legacy fallback for old configs.
+SELECT_ON="${SELECT_ON:-val_word_f1}"
 
 ES_FLAGS=()
 if [[ "$EARLY_STOP" == "1" ]]; then
@@ -166,7 +174,7 @@ python scripts/stage1_run.py \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
-  --decode-n-best "$DECODE_N_BEST" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
@@ -182,7 +190,7 @@ python scripts/stage2_run.py \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
-  --decode-n-best "$DECODE_N_BEST" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
@@ -197,7 +205,7 @@ python scripts/stage3_run.py \
   --init-from checkpoints/stage2/ckpt_best.pt \
   --steps "$STAGE3_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
-  --decode-n-best "$DECODE_N_BEST" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \

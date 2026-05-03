@@ -39,6 +39,8 @@ from vista_ocr.training.callbacks import (
     early_stop_decision,
     find_latest_checkpoint,
     load_checkpoint,
+    metric_initial_best,
+    metric_is_better,
     prune_old_checkpoints,
     run_validation,
     save_checkpoint,
@@ -189,6 +191,35 @@ def train(
     :param max_steps: if set, stop after this many optimisation steps. Used
         by tests to keep the loop short.
     """
+    # DS-fix Phase 3: startup-time validation. ``select_on=val_word_f1``
+    # only works when the val pass actually computes word_f1 -- i.e.
+    # when val_decode_fn is set AND val_decode_n > 0. Without that
+    # the gate value is None on every val pass and ckpt_best.pt is
+    # never written. Hard-fail at startup (not silently 8 h later).
+    if (
+        cfg.checkpoint is not None
+        and cfg.checkpoint.save_best
+        and cfg.checkpoint.select_on == "val_word_f1"
+        and cfg.val is not None
+        and (cfg.val_decode_fn is None or cfg.val_decode_n <= 0)
+    ):
+        raise ValueError(
+            "checkpoint.select_on='val_word_f1' but val_decode_fn / "
+            "val_decode_n are not configured to compute word_f1. "
+            "Set --decode-n > 0 (and ensure val_decode_fn is wired) "
+            "or pass --select-on val_loss."
+        )
+    if (
+        cfg.early_stop is not None
+        and cfg.early_stop.enabled
+        and cfg.early_stop.metric == "val_word_f1"
+        and cfg.val is not None
+        and (cfg.val_decode_fn is None or cfg.val_decode_n <= 0)
+    ):
+        raise ValueError(
+            "early_stop.metric='val_word_f1' but val_decode_fn / "
+            "val_decode_n are not configured to compute word_f1."
+        )
     device = torch.device(cfg.device)
     model.to(device)
     # Freeze BEFORE optimizer construction so frozen params are excluded
@@ -214,6 +245,13 @@ def train(
     accum = 0
     optimizer.zero_grad(set_to_none=True)
     step = 0
+    select_metric = (
+        cfg.checkpoint.select_on if cfg.checkpoint is not None else "val_loss"
+    )
+    best_metric = metric_initial_best(select_metric)
+    # Tracked independently of ``select_metric`` so periodic + final
+    # ckpts always carry "best val_loss seen" in their top-level field
+    # for back-compat with downstream readers.
     best_val_loss = float("inf")
     early_stop_state = EarlyStopState()
 
@@ -229,14 +267,32 @@ def train(
             resume_path, model=model, optimizer=optimizer, map_location=device
         )
         step = payload.step
+        # Resume back-compat: older ckpts stored only ``best_val_loss``.
+        # When the new selection metric is val_word_f1, prefer the
+        # explicit ``best_metric`` if the ckpt has it; otherwise reset
+        # to the initial best (the prior best_val_loss is on a
+        # different scale and must not be reused).
+        ckpt_best_metric = payload.extra.get("best_metric")
+        ckpt_best_metric_name = payload.extra.get("best_metric_name")
+        if (
+            ckpt_best_metric is not None
+            and ckpt_best_metric_name == select_metric
+        ):
+            best_metric = float(ckpt_best_metric)
+        elif select_metric == "val_loss":
+            best_metric = payload.best_val_loss
+        # Always restore best_val_loss for the periodic/final ckpt
+        # top-level field; meaningful regardless of select_metric.
         best_val_loss = payload.best_val_loss
         # F2: restore early-stop state so a resumed run keeps counting
         # patience from where the kill happened.
         early_stop_state = EarlyStopState.from_dict(
             payload.extra.get("early_stop_state"),
         )
-        LOG.info("Resumed from %s at step %d (best_val_loss=%.4f)",
-                 resume_path, step, best_val_loss)
+        LOG.info(
+            "Resumed from %s at step %d (best_%s=%.4f)",
+            resume_path, step, select_metric, best_metric,
+        )
 
     # Accept either a stream of Samples (collate inline -- simple, slow) or
     # a stream of pre-collated Batches (e.g. from
@@ -377,31 +433,41 @@ def train(
             LOG.info("validation step=%d val_loss=%.4f n=%d (%.1fs)%s",
                      step, val_stats["val_loss"], val_stats["n_batches"],
                      val_stats["elapsed_s"], extras)
-            if cfg.checkpoint and cfg.checkpoint.save_best and \
-                    val_stats["val_loss"] < best_val_loss:
-                best_val_loss = val_stats["val_loss"]
-                # Phase-2 DS-fix: when val_loss improvement marks this
-                # checkpoint as a ckpt_best candidate, fire a second
-                # eval pass with a much larger ``decode_n`` so the
-                # ckpt_best metadata carries a low-noise CER / word-F1
-                # number. The first pass kept ``decode_n`` small (=5)
-                # to keep every val pass cheap; the candidate pass
-                # runs only on improvement events (a handful per stage).
-                ckpt_extra = {
-                    "val_loss": val_stats["val_loss"],
-                    "val_n_batches": val_stats["n_batches"],
-                    "val_decoded_n": val_stats.get("val_decoded_n", 0),
-                    "early_stop_state": early_stop_state.to_dict(),
-                }
-                if (
+            if val_stats["val_loss"] < best_val_loss:
+                best_val_loss = float(val_stats["val_loss"])
+            # DS-fix Phase 3: two-stage selection.
+            #   1. GATE on the cheap (n=val_decode_n) signal: skip the
+            #      expensive second pass when the cheap metric clearly
+            #      hasn't improved.
+            #   2. CONFIRM with the second-pass (n=val_decode_n_best,
+            #      typically 256). If the second-pass metric improves
+            #      over ``best_metric`` we save ckpt_best and ratchet
+            #      ``best_metric``. If it doesn't (the gate fired on
+            #      noise), we skip the save without ratcheting -- so
+            #      a future *real* improvement is not locked out by
+            #      a noise spike on n=5.
+            # When val_decode_n_best == 0, the second pass is disabled
+            # and the gate IS the truth (legacy single-pass behaviour).
+            gate_value = val_stats.get(select_metric)
+            gate_improved = (
+                gate_value is not None
+                and cfg.checkpoint is not None
+                and cfg.checkpoint.save_best
+                and metric_is_better(gate_value, best_metric, select_metric)
+            )
+            if gate_improved:
+                run_second_pass = (
                     cfg.val_decode_n_best > 0
                     and cfg.val_decode_fn is not None
                     and cfg.val_batches_factory is not None
-                ):
+                )
+                truth_value = gate_value
+                truth_stats: dict | None = None
+                if run_second_pass:
                     if device.type == "cuda":
                         torch.cuda.empty_cache()
                     big_batches = cfg.val_batches_factory()
-                    big_stats = run_validation(
+                    truth_stats = run_validation(
                         model, big_batches, cfg.val_loss_fn,
                         max_batches=max(
                             cfg.val.max_batches, cfg.val_decode_n_best,
@@ -411,39 +477,78 @@ def train(
                     )
                     if device.type == "cuda":
                         torch.cuda.empty_cache()
+                    truth_value = truth_stats.get(select_metric, gate_value)
                     LOG.info(
-                        "BEST_CANDIDATE: step=%d val_loss=%.4f "
-                        "cer=%.4f wer=%.4f word_f1=%.4f n=%d empty=%d",
-                        step, big_stats["val_loss"],
-                        big_stats.get("val_cer", float("nan")),
-                        big_stats.get("val_wer", float("nan")),
-                        big_stats.get("val_word_f1", float("nan")),
-                        big_stats.get("val_decoded_n", 0),
-                        big_stats.get("val_decoded_n_empty", 0),
+                        "BEST_CANDIDATE: step=%d selected=%s=%.4f "
+                        "val_loss=%.4f cer=%.4f wer=%.4f word_f1=%.4f "
+                        "n=%d empty=%d",
+                        step, select_metric, float(truth_value),
+                        truth_stats["val_loss"],
+                        truth_stats.get("val_cer", float("nan")),
+                        truth_stats.get("val_wer", float("nan")),
+                        truth_stats.get("val_word_f1", float("nan")),
+                        truth_stats.get("val_decoded_n", 0),
+                        truth_stats.get("val_decoded_n_empty", 0),
                     )
-                    ckpt_extra["best_candidate"] = {
-                        "val_loss": big_stats["val_loss"],
-                        "val_cer": big_stats.get("val_cer"),
-                        "val_wer": big_stats.get("val_wer"),
-                        "val_word_f1": big_stats.get("val_word_f1"),
-                        "val_decoded_n": big_stats.get("val_decoded_n", 0),
-                        "val_decoded_n_empty": big_stats.get(
-                            "val_decoded_n_empty", 0,
-                        ),
+                # Truth-pass confirmation: only save and ratchet if the
+                # truth_value still beats best_metric. This is the noise
+                # filter -- without it, a noisy gate spike both writes
+                # ckpt_best AND raises best_metric, locking out future
+                # real improvements.
+                if metric_is_better(truth_value, best_metric, select_metric):
+                    best_metric = float(truth_value)
+                    ckpt_extra = {
+                        "val_loss": val_stats["val_loss"],
+                        "val_n_batches": val_stats["n_batches"],
+                        "val_decoded_n": val_stats.get("val_decoded_n", 0),
+                        "best_metric": best_metric,
+                        "best_metric_name": select_metric,
+                        "early_stop_state": early_stop_state.to_dict(),
                     }
-                save_checkpoint(
-                    cfg.checkpoint.out_dir / "ckpt_best.pt",
-                    step=step, model=model, optimizer=optimizer,
-                    best_val_loss=best_val_loss,
-                    extra=ckpt_extra,
-                )
+                    if truth_stats is not None:
+                        ckpt_extra["best_candidate"] = {
+                            "val_loss": truth_stats["val_loss"],
+                            "val_cer": truth_stats.get("val_cer"),
+                            "val_wer": truth_stats.get("val_wer"),
+                            "val_word_f1": truth_stats.get("val_word_f1"),
+                            "val_decoded_n": truth_stats.get(
+                                "val_decoded_n", 0,
+                            ),
+                            "val_decoded_n_empty": truth_stats.get(
+                                "val_decoded_n_empty", 0,
+                            ),
+                        }
+                    save_checkpoint(
+                        cfg.checkpoint.out_dir / "ckpt_best.pt",
+                        step=step, model=model, optimizer=optimizer,
+                        best_val_loss=float(val_stats["val_loss"]),
+                        extra=ckpt_extra,
+                    )
+                else:
+                    LOG.info(
+                        "BEST_CANDIDATE_REJECTED: step=%d gate=%s=%.4f "
+                        "truth=%s=%.4f best=%.4f -- noise filter",
+                        step, select_metric, float(gate_value),
+                        select_metric, float(truth_value), best_metric,
+                    )
 
             # Phase 8: early-stop decision after every val pass.
             should_stop = False
             stop_reason: str | None = None
             if cfg.early_stop is not None and cfg.early_stop.enabled:
+                # DS-fix P3: early-stop uses the same metric as ckpt_best
+                # (cfg.early_stop.metric, default val_word_f1). The
+                # decision function takes the value + a higher_is_better
+                # flag so EMA / patience / spike directions stay correct.
+                es_metric = cfg.early_stop.metric
+                es_value = val_stats.get(es_metric)
+                if es_value is None:
+                    # If the configured metric isn't present (e.g.
+                    # val_word_f1 with decode_n=0), fall back to val_loss.
+                    es_metric = "val_loss"
+                    es_value = val_stats["val_loss"]
                 should_stop, stop_reason = early_stop_decision(
-                    val_loss=float(val_stats["val_loss"]),
+                    val_loss=float(es_value),
                     state=early_stop_state,
                     cfg=cfg.early_stop,
                 )
@@ -451,9 +556,9 @@ def train(
                 # F6: structured log line so the tailer parses it as
                 # an event, not a free-form INFO line.
                 LOG.info(
-                    "EARLY_STOP: step=%d reason=%s smoothed_best=%.4f "
+                    "EARLY_STOP: step=%d reason=%s metric=%s smoothed_best=%.4f "
                     "patience=%d no_improve=%d spike=%d",
-                    step, stop_reason,
+                    step, stop_reason, es_metric,
                     early_stop_state.smoothed_best,
                     cfg.early_stop.patience,
                     early_stop_state.no_improve_counter,

@@ -12,6 +12,32 @@ Three blockers from a data-scientist review. This entry is Phase 1
 
 ### Changed
 
+- **`ckpt_best` and early-stop now select on `val_word_f1`** by
+  default (``CheckpointConfig.select_on``, ``EarlyStopConfig.metric``;
+  ``val_loss`` kept as an opt-in via ``--select-on val_loss``). The
+  2026-05-02 PDFA hold-out diagnosis showed val_loss can be misleading
+  when image conditioning is weak -- the language-model prior dominates
+  so val_loss reflects the prior, not OCR quality. word-F1 is what
+  BENCHMARKS rows compare against and what the paper reports.
+
+  Mechanically: a ``metric_is_better`` helper centralises direction
+  (lower-is-better for val_loss, higher-is-better for word_f1).
+  ckpt_best uses a *gate-then-truth* protocol: the cheap n=5 signal
+  gates whether to fire the second pass; the n=val_decode_n_best
+  result is the *truth* that ratchets ``best_metric`` and writes
+  ckpt_best. A noisy gate spike whose truth-pass disagrees logs a
+  ``BEST_CANDIDATE_REJECTED:`` line and skips the save -- without
+  this filter a noise spike would lock out future real improvements.
+  Stage scripts gain ``--select-on``; ``pretrain_chain.sh`` forwards
+  ``SELECT_ON``. Startup-time validation hard-fails if
+  ``select_on=val_word_f1`` without a configured ``val_decode_fn`` /
+  ``val_decode_n > 0`` (otherwise ckpt_best would silently never get
+  written). 6 tests in ``tests/test_training.py``.
+
+  Resume back-compat: legacy checkpoints without ``best_metric`` /
+  ``best_metric_name`` keys load cleanly; ``best_val_loss`` still
+  written at the top level for any external reader.
+
 - **`ckpt_best` candidates get a second-pass low-noise eval**
   (`TrainConfig.val_decode_n_best`, default 256 in stage scripts; 0
   preserves the prior behaviour). Every val pass keeps `decode_n=5`

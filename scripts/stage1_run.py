@@ -63,7 +63,8 @@ LOG = logging.getLogger("stage1")
 def _build_early_stop(args: argparse.Namespace) -> EarlyStopConfig | None:
     """Build EarlyStopConfig from --early-stop-* CLI flags. Returns
     None when --early-stop is not set so the train loop's check is a
-    no-op."""
+    no-op. Defaults to ``--select-on`` so ckpt_best and early-stop
+    watch the same metric (DS-fix Phase 3)."""
     if not getattr(args, "early_stop", False):
         return None
     return EarlyStopConfig(
@@ -71,6 +72,7 @@ def _build_early_stop(args: argparse.Namespace) -> EarlyStopConfig | None:
         patience=args.early_stop_patience,
         min_delta=args.early_stop_min_delta,
         warmup_vals=args.early_stop_warmup,
+        metric=args.select_on,
     )
 
 
@@ -104,6 +106,12 @@ def main() -> None:
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches "
                          "each val call. 0 disables.")
+    ap.add_argument("--select-on", default="val_word_f1",
+                    choices=("val_loss", "val_word_f1"),
+                    help="DS-fix Phase 3: ckpt_best selection metric. "
+                         "val_word_f1 (paper-faithful) is the default; "
+                         "val_loss kept for back-compat with old configs. "
+                         "Also propagated to --early-stop's metric.")
     ap.add_argument("--decode-n-best", type=int, default=256,
                     help="DS-fix Phase 2: when a val pass marks the "
                          "ckpt as a ckpt_best candidate, fire a second "
@@ -221,7 +229,8 @@ def main() -> None:
         # Notes-spec keeps dropout fixed for stage-1.
         encoder_dropout_max=None,
         checkpoint=CheckpointConfig(
-            out_dir=args.out, save_every=args.ckpt_every, keep_last=args.keep_last,
+            out_dir=args.out, save_every=args.ckpt_every,
+            keep_last=args.keep_last, select_on=args.select_on,
         ),
         val=ValConfig(every=args.val_every, max_batches=args.val_batches),
         val_batches_factory=val_batches_factory,
