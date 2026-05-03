@@ -4,6 +4,59 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — Run B engineering pass
+
+Eight phases shipped to support a longer + faster Run B on the L40S
+without changing the algorithm. Each phase is one commit; tests in
+parentheses live in the named files.
+
+### Added
+
+- **Shard cycling** (`PdfaConfig.cycle`, `IdlConfig.cycle`): WebDataset
+  ``shardshuffle=True`` + per-sample ``.shuffle(N)`` + ``.repeat()``.
+  Stops the "training stalls at 18K steps because data ran out" mode.
+  Tests in `tests/test_pdfa.py`.
+- **Mixed PDFA + IDL loader** (`make_mixed_pdfa_idl_loader`): weighted
+  mixture (default 70/30) over the existing `MixedStream`. Tests in
+  `tests/test_dataloader.py`.
+- **Bbox-scaling fix in `collate.py`**: bboxes are now scaled by the
+  resize factor when `resize_to_canvas` shrinks the image, fixing the
+  Albumentations overflow error that fired the first time `--augment`
+  was used at `large` preset. Test in `tests/test_data.py`.
+- **`--prefetch-factor` flag** on stage scripts; chain forwards
+  `NUM_WORKERS`, `PREFETCH_FACTOR`.
+- **Production-ready early stopping** (`EarlyStopConfig` with EMA
+  smoothing + spike detection + persistent state across resume +
+  per-stage `--early-stop-*` flags + structured `EARLY_STOP:` log
+  line). 11 tests in `tests/test_early_stop.py`.
+- **On-disk sample cache** (`vista_ocr.data.cache`): pre-resized PNG +
+  JSON sidecar per sample, geometry-bound manifest, atomic write,
+  resume on partial render. Hard-error on geometry mismatch.
+  `scripts/cache_dataset.py` populates from PDFA / IDL. 12 tests in
+  `tests/test_cache.py`.
+- **`--compile` flag** (off by default) on stage scripts; chain
+  forwards `COMPILE`. Falls back to eager with a WARNING when
+  ``torch.compile`` raises so a multi-day run is never killed by a
+  compile glitch. Test in `tests/test_training.py`.
+- **`scripts/smoke_chain.sh`**: 600-step (200/200/200) chain smoke
+  exercising both stage transitions; runs in ~3-5 min on L40S.
+- **HF pre-flight in `pretrain_supervised.sh`**: warms the
+  ``naver-clova-ix/donut-base`` download once before any chain
+  attempt. Failed network at hour 0 no longer trips a 20-attempt
+  restart loop with no useful error.
+
+### Run B launch envs (the recommended set on the L40S)
+
+```
+PAGE_PRESET=large GRAD_ACCUM_STEPS=16 INIT_DECODER_FROM=donut
+SDPA=1 GRAD_CKPT=0 NUM_WORKERS=8 PREFETCH_FACTOR=8
+EARLY_STOP=1
+STAGE1_STEPS=50000 STAGE2_STEPS=200000 STAGE3_STEPS=100000
+```
+
+Same with ``COMPILE=1`` is the candidate Run C envelope (after Run B
+validates the structural changes).
+
 ## 2026-05-02 — speed knobs + auto-launcher
 
 After moving the run to an L40S box, two speed knobs were exposed for
