@@ -80,19 +80,69 @@ messages and module docstrings.
 The fastest path uses three helper scripts. Each is idempotent and safe
 to rerun.
 
-### 1. Environment
+### 1. Install
+
+`vista-ocr` is a regular Python package; you can install with plain
+pip and pick the right torch wheel via `--extra-index-url`. No conda
+required.
 
 ```bash
-# CPU dev (Linux / macOS)
-conda env create -f environment.yml
-conda activate vista-ocr
-pip install -e .
-pytest -q                         # ~90 seconds, 242 tests
+# CPU only (Linux / macOS, e.g. CI)
+pip install -e ".[cpu]"        --extra-index-url https://download.pytorch.org/whl/cpu
 
-# GPU box (CUDA 12.1)
-conda env create -f environment-cuda.yml
-conda activate vista-ocr
-pip install -e .
+# GPU box, CUDA 12.1 (RTX 3090, L40S)
+pip install -e ".[gpu-cu121]"  --extra-index-url https://download.pytorch.org/whl/cu121
+
+# GPU box, CUDA 12.4
+pip install -e ".[gpu-cu124]"  --extra-index-url https://download.pytorch.org/whl/cu124
+```
+
+After install, the `vista-ocr` console script is on your PATH; verify:
+
+```bash
+vista-ocr --version
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+pytest -q                         # ~2 minutes
+```
+
+If you prefer conda, the legacy `environment.yml` / `environment-cuda.yml`
+files still work — `pip install -e ".[cpu]"` (or `gpu-cu121`) inside the
+activated env adds the entry point and pins the runtime deps.
+
+### CLI
+
+The `vista-ocr` console script exposes the Python verbs; the legacy
+`scripts/*.py` invocations and `scripts/*.sh` chain wrappers continue
+to work as before (operators in mid-flight runs are unaffected).
+
+| Verb | Purpose |
+|---|---|
+| `vista-ocr stage {1\|2\|3}` | Pretraining stage (mirrors `scripts/stage{N}_run.py`). |
+| `vista-ocr eval --manifest <jsonl>` | Evaluate a checkpoint against a JSONL manifest; writes a JSON sidecar. |
+| `vista-ocr finetune --train-manifest X --val-manifest Y --init-from K` | Generic manifest-driven finetune. |
+| `vista-ocr infer --folder <root>` | Decode every image in a folder; output JSONL with a `_meta` header (ckpt path/step, timestamp). |
+| `vista-ocr cache` | Pre-render dataset to a geometry-bound cache (mirrors `scripts/cache_dataset.py`). |
+
+#### JSONL manifest
+
+`finetune` and `eval` consume a JSONL manifest where each line is
+one document (see `vista_ocr.data.manifest`):
+
+```jsonl
+{"image": "img/001.jpg", "ref": "Hello world"}
+{"image": "img/002.jpg", "ref": "Foo bar", "bboxes": [[10,20,100,50,"Foo"]]}
+```
+
+Required: `image` (relative to the manifest's dir, or absolute), `ref`.
+Optional: `bboxes` (`[[x1,y1,x2,y2,text], ...]`), `task` (default
+`ocr_layout`), `query_text` / `query_bbox`, `version` (default 1;
+unknown versions are a hard error).
+
+Per-benchmark adapters in `scripts/datasets/` produce manifests, e.g.:
+
+```bash
+./scripts/datasets/setup_sroie.sh /path/to/SROIE2019 \
+    --emit-manifests data/sroie/manifests
 ```
 
 ### 2. Pull data + train tokenizer (≈ 10 GB, one-shot)

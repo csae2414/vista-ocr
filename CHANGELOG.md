@@ -4,6 +4,73 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — `vista-ocr` CLI + manifest-driven eval/finetune
+
+The package now installs cleanly via pip with a `[project.scripts]`
+entry point; operators get a single console script (`vista-ocr`) with
+six Python verbs, plus a JSONL manifest schema that lets any benchmark
+plug in via a data-prep adapter (no Python plug-in required).
+
+### Added
+
+- **`pyproject.toml` runtime deps + torch extras** (`[cpu]`, `[gpu-cu121]`,
+  `[gpu-cu124]`, `[tb]`, `[dev]`). Torch lives in extras only so the
+  operator picks the matching wheel via `--extra-index-url`. Install
+  recipe in README. Bumped to `0.1.0` (first installable release).
+- **`vista-ocr` console script** (`vista_ocr.cli`). Six verbs:
+  - ``vista-ocr stage {1|2|3}`` -- pretraining stages, mirrors
+    ``scripts/stage{N}_run.py``.
+  - ``vista-ocr eval --manifest <jsonl>`` -- generic checkpoint eval.
+  - ``vista-ocr finetune --train-manifest --val-manifest --init-from``
+    -- generic manifest-driven finetune.
+  - ``vista-ocr infer --folder <root>`` -- decode-only; output JSONL
+    carries a ``_meta`` header (ckpt path/step, vista-ocr version,
+    timestamp) for forensic disambiguation.
+  - ``vista-ocr cache`` -- pre-render dataset to a geometry-bound
+    cache, mirrors ``scripts/cache_dataset.py``.
+- **JSONL manifest schema** (`vista_ocr.data.manifest`). Required:
+  ``image`` (relative to manifest dir or absolute), ``ref``. Optional:
+  ``bboxes``, ``task``, ``query_text``, ``query_bbox``, ``version``.
+  v1; unknown versions are a hard error so silent skips can't produce
+  misleading metrics.
+- **SROIE manifest emitter** (`scripts/datasets/sroie_to_manifest.py`,
+  invoked via ``setup_sroie.sh --emit-manifests <out-dir>``). Walks the
+  SROIE flat layout and writes ``train.jsonl`` + ``test.jsonl`` for
+  use with the manifest-driven CLI verbs. The legacy path
+  (``scripts/benchmarks/sroie/{run.py,eval.py,chain.sh}``) stays in
+  place as the proven baseline; the new path runs alongside until both
+  produce numerically equivalent SROIE word-F1.
+
+### Behavioural-equivalence guarantees
+
+Drift between the legacy ``scripts/`` and the new
+``vista_ocr.entrypoints/`` modules is anchored by three tests per
+pretraining stage (``tests/test_stage_equivalence.py``):
+
+1. flag-set parity (``--help`` long-form flags must match).
+2. ``TrainConfig`` snapshot equality under a fixed minimal arglist
+   with ``train()`` monkeypatched.
+3. ``model.state_dict()`` key-set equality (catches architecture
+   drift outside ``TrainConfig``).
+
+Plus the cold-start lint (``test_cli_phase_a``,
+``test_cli_phase_b``): importing ``vista_ocr.cli`` -- and invoking
+``vista-ocr --help`` -- must NOT load torch. Verb modules defer
+``import torch`` into ``run()``.
+
+The `cache` entrypoint additionally has a flag-set equivalence test
+against ``scripts/cache_dataset.py``.
+
+### Not changed
+
+- `scripts/` is untouched (bit-for-bit identical to before this entry).
+  Run A on L40S and Run B on 3090 are mid-flight on those scripts and
+  must finish exactly as launched.
+- `scripts/benchmarks/sroie/` stays in place. Once the manifest path
+  produces numerically equivalent SROIE word-F1 (verification gate,
+  deferred), a follow-up commit can retire the SROIE-specific Python
+  entry points there in favour of the generic CLI verbs.
+
 ## 2026-05-03 — SROIE finetune chain scaffold
 
 Per-benchmark finetune + eval entry points now have their own

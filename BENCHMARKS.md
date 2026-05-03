@@ -11,6 +11,27 @@ the metrics via `scripts/finetune_eval.py` and a per-dataset log under
 | IAM        | WER     | **10.14** | _TBD_ | _TBD_ |
 | MAURDOR-EN | Area-F1 | **87.02** | _TBD_ | _TBD_ |
 
+Reproduction recipe per row (after the pretraining chain has produced
+``checkpoints/stage3/ckpt_best.pt``):
+
+```bash
+# SROIE -- the data-prep adapter emits manifests; the CLI verbs do
+# the rest. IAM / MAURDOR follow the same shape with their own
+# scripts/datasets/setup_*.sh adapters.
+./scripts/datasets/setup_sroie.sh /path/to/SROIE2019 \
+    --emit-manifests data/sroie/manifests
+vista-ocr finetune \
+    --train-manifest data/sroie/manifests/train.jsonl \
+    --val-manifest   data/sroie/manifests/test.jsonl \
+    --init-from checkpoints/stage3/ckpt_best.pt \
+    --out checkpoints/finetune-sroie
+vista-ocr eval \
+    --manifest data/sroie/manifests/test.jsonl \
+    --ckpt checkpoints/finetune-sroie/ckpt_best.pt \
+    --spm data/processed/vocab/sp_en_16k.model \
+    --out-json logs/eval_sroie.json
+```
+
 Headline rows depend on licence-restricted datasets (SROIE, IAM,
 MAURDOR) that are not bundled with the repository. PRs welcome.
 

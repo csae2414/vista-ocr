@@ -6,12 +6,16 @@ the chain, and getting a PDFA hold-out number into BENCHMARKS.md.
 ## 1. Environment
 
 ```bash
-# CUDA box (CUDA 12.1 + RTX 3090 / L40s / A100):
-conda env create -f environment-cuda.yml
-conda activate vista-ocr
-pip install -e .
-pytest -q                   # ~90 seconds, expects ~280 tests passing
+# Plain pip + matching torch wheel (preferred; conda not required):
+pip install -e ".[gpu-cu121]" --extra-index-url https://download.pytorch.org/whl/cu121
+vista-ocr --version
+pytest -q                   # ~2 minutes, ~390 tests passing
 ```
+
+The `vista-ocr` console script exposes the Python verbs (stage 1/2/3,
+eval, finetune, infer, cache); the legacy `python scripts/...` and
+chain wrappers in `scripts/*.sh` keep working unchanged. Operators
+mid-run are unaffected.
 
 ## 2. Data
 
