@@ -118,7 +118,7 @@ to work as before (operators in mid-flight runs are unaffected).
 | Verb | Purpose |
 |---|---|
 | `vista-ocr stage {1\|2\|3}` | Pretraining stage (mirrors `scripts/stage{N}_run.py`). |
-| `vista-ocr eval --manifest <jsonl>` | Evaluate a checkpoint against a JSONL manifest; writes a JSON sidecar. |
+| `vista-ocr eval --manifest <jsonl>` | Evaluate a checkpoint against a JSONL manifest; writes a JSON sidecar. Computes recognition (CER/WER/word-F1) always; detection (DetEval/Area-F1/AP@IoU) when manifest has `bboxes`; AP@CER (region-OCR) with `--cer-ap-thresholds`. Paper-faithful SROIE detection rows via `--bbox-expand-px 2`. |
 | `vista-ocr finetune --train-manifest X --val-manifest Y --init-from K` | Generic manifest-driven finetune. |
 | `vista-ocr infer --folder <root>` | Decode every image in a folder; output JSONL with a `_meta` header (ckpt path/step, timestamp). |
 | `vista-ocr cache` | Pre-render dataset to a geometry-bound cache (mirrors `scripts/cache_dataset.py`). |

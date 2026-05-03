@@ -1,36 +1,67 @@
 # Benchmarks
 
-Reproduction of the headline numbers from the original paper. Each row
-is filled in after running `scripts/finetune_chain.sh` (which produces
-the metrics via `scripts/finetune_eval.py` and a per-dataset log under
-`logs/`).
+Reproduction of the headline numbers from the original paper. Each
+row is filled in after running the per-benchmark adapter
+(``scripts/datasets/setup_<bench>.sh``) and the manifest-driven CLI
+verbs (``vista-ocr finetune`` + ``vista-ocr eval``).
 
-| Dataset | Metric | Paper | Ours | Δ |
-|---|---|---|---|---|
-| SROIE 2019 | word-F1 | **93.95** | _TBD_ | _TBD_ |
-| IAM        | WER     | **10.14** | _TBD_ | _TBD_ |
-| MAURDOR-EN | Area-F1 | **87.02** | _TBD_ | _TBD_ |
+Recognition + detection columns map to paper Tables 1-2:
+
+| Dataset | Recognition | Paper | Ours | Detection | Paper | Ours |
+|---|---|---|---|---|---|---|
+| SROIE 2019 | word-F1 | **93.95** | _TBD_ | DetEval-F1 | **91.52** | _TBD_ |
+| IAM        | WER     | **10.14** | _TBD_ | Area-F1   | _TBD_   | _TBD_ |
+| MAURDOR-EN | CER     | _TBD_  | _TBD_ | Area-F1    | **87.02** | _TBD_ |
 
 Reproduction recipe per row (after the pretraining chain has produced
 ``checkpoints/stage3/ckpt_best.pt``):
 
 ```bash
-# SROIE -- the data-prep adapter emits manifests; the CLI verbs do
-# the rest. IAM / MAURDOR follow the same shape with their own
-# scripts/datasets/setup_*.sh adapters.
+# 1. Prep data (per-benchmark adapter -> emits JSONL manifests).
 ./scripts/datasets/setup_sroie.sh /path/to/SROIE2019 \
     --emit-manifests data/sroie/manifests
+
+# 2. Finetune (manifest-driven; same flag shape for every benchmark).
 vista-ocr finetune \
     --train-manifest data/sroie/manifests/train.jsonl \
     --val-manifest   data/sroie/manifests/test.jsonl \
-    --init-from checkpoints/stage3/ckpt_best.pt \
-    --out checkpoints/finetune-sroie
+    --spm            data/processed/vocab/sp_en_16k.model \
+    --init-from      checkpoints/stage3/ckpt_best.pt \
+    --out            checkpoints/finetune-sroie
+
+# 3. Eval -- recognition row only (--bbox-expand-px=0 default):
 vista-ocr eval \
     --manifest data/sroie/manifests/test.jsonl \
-    --ckpt checkpoints/finetune-sroie/ckpt_best.pt \
-    --spm data/processed/vocab/sp_en_16k.model \
+    --ckpt     checkpoints/finetune-sroie/ckpt_best.pt \
+    --spm      data/processed/vocab/sp_en_16k.model \
     --out-json logs/eval_sroie.json
+
+# 4. Eval -- paper-comparable SROIE detection row (paper Section 4.1.1
+#    reports detection numbers with +2 px bbox expansion on predicted
+#    boxes; paper Table 2 row used here):
+vista-ocr eval \
+    --manifest data/sroie/manifests/test.jsonl \
+    --ckpt     checkpoints/finetune-sroie/ckpt_best.pt \
+    --spm      data/processed/vocab/sp_en_16k.model \
+    --bbox-expand-px 2 \
+    --out-json logs/eval_sroie_expand2.json
 ```
+
+Sidecar JSON shape (see ``vista_ocr.eval.sidecar.EvalSidecar``):
+
+* Always: ``cer``, ``wer``, ``precision``, ``recall``, ``word_f1``,
+  ``n_docs``, ``n_empty``, ``ckpt_step``, ``elapsed_s``, ...
+* When manifest carries ``bboxes``: a ``detection`` block with
+  ``deteval_precision``, ``deteval_recall``, ``deteval_f1``,
+  ``area_f1``, ``ap_at_iou`` (a dict at thresholds 0.5/0.6/0.7/0.8),
+  ``bbox_expand_px``.
+* When ``--cer-ap-thresholds`` is set: a ``cer_ap`` block (paper
+  §4.2 region-OCR row).
+
+Read the recognition column off ``word_f1`` (or ``cer`` / ``wer``);
+the detection column off ``detection.deteval_f1`` or
+``detection.area_f1``. ``bbox_expand_px`` records which row was
+generated so the BENCHMARKS comparison is unambiguous.
 
 Headline rows depend on licence-restricted datasets (SROIE, IAM,
 MAURDOR) that are not bundled with the repository. PRs welcome.

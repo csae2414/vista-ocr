@@ -160,6 +160,15 @@ Result JSON has CER, WER, word-F1, empty-fraction, decoded-batch
 count, and the underlying ckpt step. Paste these into the
 "Diagnostic ablation table" in `BENCHMARKS.md`.
 
+For benchmark rows that use the manifest-driven path
+(`vista-ocr eval --manifest`), the JSON additionally carries a
+``detection`` block (DetEval P/R/F1, Area-F1, AP @ IoU) when the
+manifest has bboxes. Use ``--bbox-expand-px 2`` to reproduce paper
+§4.1.1's SROIE detection numbers (the model produces tighter boxes
+than GT; predicted boxes are expanded, GT is not). For
+region-OCR rows, opt in to AP-at-CER via
+``--cer-ap-thresholds 0.0,0.1,0.2,0.3``.
+
 ### What `ckpt_best.pt` means
 
 Since 2026-05-03, ``ckpt_best.pt`` is selected on **val_word_f1**
