@@ -81,6 +81,9 @@ def main() -> None:
                     help="B1: time-constant of the dropout schedule.")
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches.")
+    ap.add_argument("--decode-n-best", type=int, default=256,
+                    help="DS-fix Phase 2: second-pass eval on ckpt_best "
+                         "candidates with this many batches. 0 disables.")
     ap.add_argument("--augment", action="store_true",
                     help="B2: enable train-time bbox-aware augmentation.")
     # A3: stage-3 multitask weights. Paper Section 3.3 reads as equal-
@@ -202,6 +205,7 @@ def main() -> None:
         # B3
         val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
         val_decode_n=args.decode_n,
+        val_decode_n_best=args.decode_n_best,
         early_stop=(
             EarlyStopConfig(
                 enabled=True,

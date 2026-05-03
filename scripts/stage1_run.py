@@ -104,6 +104,12 @@ def main() -> None:
     ap.add_argument("--decode-n", type=int, default=5,
                     help="B3: decode + score CER/WER on first N val batches "
                          "each val call. 0 disables.")
+    ap.add_argument("--decode-n-best", type=int, default=256,
+                    help="DS-fix Phase 2: when a val pass marks the "
+                         "ckpt as a ckpt_best candidate, fire a second "
+                         "eval pass on this many batches and persist "
+                         "the (low-noise) CER/word-F1 in the ckpt's "
+                         "extra dict. 0 disables the second pass.")
     ap.add_argument("--augment", action="store_true",
                     help="B2: enable train-time bbox-aware augmentation "
                          "(rotation, brightness/contrast, blur, JPEG).")
@@ -223,6 +229,7 @@ def main() -> None:
         # B3: diagnostic decode + CER/WER. Disabled when --decode-n=0.
         val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
         val_decode_n=args.decode_n,
+        val_decode_n_best=args.decode_n_best,
         early_stop=_build_early_stop(args),
     )
 

@@ -33,6 +33,11 @@
 #                                       individual stageN_run.py)
 #   COMPILE             default 0       (1=torch.compile the model;
 #                                       falls back to eager on failure)
+#   DECODE_N_BEST       default 256     (DS-fix P2: second-pass eval on
+#                                       ckpt_best candidates uses this
+#                                       many batches; 0 disables. The
+#                                       per-val log line still uses
+#                                       --decode-n=5)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -76,6 +81,10 @@ PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
 EARLY_STOP="${EARLY_STOP:-0}"
 # torch.compile (Phase 6). Off by default. Enable for Run C.
 COMPILE="${COMPILE:-0}"
+# DS-fix P2: ckpt_best candidate second-pass eval. 256 batches is a
+# reasonable default (per-val cost stays at decode_n=5; second pass
+# fires only on val_loss improvement, which is rare).
+DECODE_N_BEST="${DECODE_N_BEST:-256}"
 
 ES_FLAGS=()
 if [[ "$EARLY_STOP" == "1" ]]; then
@@ -157,6 +166,7 @@ python scripts/stage1_run.py \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+  --decode-n-best "$DECODE_N_BEST" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
@@ -172,6 +182,7 @@ python scripts/stage2_run.py \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+  --decode-n-best "$DECODE_N_BEST" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
@@ -186,6 +197,7 @@ python scripts/stage3_run.py \
   --init-from checkpoints/stage2/ckpt_best.pt \
   --steps "$STAGE3_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --decode-n-best "$DECODE_N_BEST" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \

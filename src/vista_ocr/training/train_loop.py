@@ -82,6 +82,13 @@ class TrainConfig:
     val_loss_fn: object | None = None             # callable(model, batch) -> Tensor
     val_decode_fn: object | None = None           # callable(model, batch) -> (refs, hyps)
     val_decode_n: int = 0                         # >0 enables CER/WER on first N batches
+    # Phase-2 DS-fix: every-val ``val_decode_n`` is small (5) so the
+    # per-step log line is cheap. When a val pass is a ckpt_best
+    # candidate (val_loss improved), fire a *second* eval pass with
+    # ``val_decode_n_best`` samples (default 256) and persist the
+    # bigger-sample CER/WER/word-F1 in the checkpoint's ``extra`` dict.
+    # 0 disables the second pass and keeps the prior behaviour.
+    val_decode_n_best: int = 0
     # Early stopping (Phase 8). Off by default; on per-stage when
     # operator opts in via ``--early-stop`` flag.
     early_stop: "EarlyStopConfig | None" = None
@@ -373,14 +380,62 @@ def train(
             if cfg.checkpoint and cfg.checkpoint.save_best and \
                     val_stats["val_loss"] < best_val_loss:
                 best_val_loss = val_stats["val_loss"]
+                # Phase-2 DS-fix: when val_loss improvement marks this
+                # checkpoint as a ckpt_best candidate, fire a second
+                # eval pass with a much larger ``decode_n`` so the
+                # ckpt_best metadata carries a low-noise CER / word-F1
+                # number. The first pass kept ``decode_n`` small (=5)
+                # to keep every val pass cheap; the candidate pass
+                # runs only on improvement events (a handful per stage).
+                ckpt_extra = {
+                    "val_loss": val_stats["val_loss"],
+                    "val_n_batches": val_stats["n_batches"],
+                    "val_decoded_n": val_stats.get("val_decoded_n", 0),
+                    "early_stop_state": early_stop_state.to_dict(),
+                }
+                if (
+                    cfg.val_decode_n_best > 0
+                    and cfg.val_decode_fn is not None
+                    and cfg.val_batches_factory is not None
+                ):
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    big_batches = cfg.val_batches_factory()
+                    big_stats = run_validation(
+                        model, big_batches, cfg.val_loss_fn,
+                        max_batches=max(
+                            cfg.val.max_batches, cfg.val_decode_n_best,
+                        ),
+                        decode_fn=cfg.val_decode_fn,
+                        decode_n=cfg.val_decode_n_best,
+                    )
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    LOG.info(
+                        "BEST_CANDIDATE: step=%d val_loss=%.4f "
+                        "cer=%.4f wer=%.4f word_f1=%.4f n=%d empty=%d",
+                        step, big_stats["val_loss"],
+                        big_stats.get("val_cer", float("nan")),
+                        big_stats.get("val_wer", float("nan")),
+                        big_stats.get("val_word_f1", float("nan")),
+                        big_stats.get("val_decoded_n", 0),
+                        big_stats.get("val_decoded_n_empty", 0),
+                    )
+                    ckpt_extra["best_candidate"] = {
+                        "val_loss": big_stats["val_loss"],
+                        "val_cer": big_stats.get("val_cer"),
+                        "val_wer": big_stats.get("val_wer"),
+                        "val_word_f1": big_stats.get("val_word_f1"),
+                        "val_decoded_n": big_stats.get("val_decoded_n", 0),
+                        "val_decoded_n_empty": big_stats.get(
+                            "val_decoded_n_empty", 0,
+                        ),
+                    }
                 save_checkpoint(
                     cfg.checkpoint.out_dir / "ckpt_best.pt",
                     step=step, model=model, optimizer=optimizer,
                     best_val_loss=best_val_loss,
-                    extra={
-                        "val_loss": val_stats["val_loss"],
-                        "early_stop_state": early_stop_state.to_dict(),
-                    },
+                    extra=ckpt_extra,
                 )
 
             # Phase 8: early-stop decision after every val pass.

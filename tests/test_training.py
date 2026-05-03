@@ -608,3 +608,113 @@ def test_early_stop_state_restores_on_resume(
     )
     assert any("EARLY_STOP: " in r.message for r in caplog.records)
     assert any("Resumed from" in r.message for r in caplog.records)
+
+
+# ---------- DS-fix Phase 2: ckpt_best second-pass eval ---------------------
+#
+# val_decode_n stays small (5) so the per-val log line is cheap. When a
+# val pass marks the ckpt as a ckpt_best candidate (val_loss improved),
+# train() fires a second eval pass with val_decode_n_best samples and
+# persists the larger-sample CER / WER / word-F1 in the checkpoint's
+# ``extra["best_candidate"]`` dict. These two tests cover the wiring:
+# (1) the second pass fires only on val_loss improvement and lands in
+# the ckpt; (2) without val_decode_n_best the prior behaviour is
+# preserved bit-exact.
+
+def _candidate_cfg(out_dir, *, decode_n_best, decreasing_loss=True):
+    """A train cfg with val every step, a fake decode_fn that returns
+    perfect predictions, and a loss_fn whose value drops on each call
+    (so every val pass is a ckpt_best candidate)."""
+    from vista_ocr.training.callbacks import CheckpointConfig, ValConfig
+
+    # Constant small loss so every val pass beats the prior best.
+    # The second eval pass also calls loss_fn (once per batch up to
+    # val_decode_n_best), so a fixed-length iterator would exhaust.
+    def loss_fn(_model, _batch):
+        return torch.tensor(0.1 if decreasing_loss else 0.5)
+
+    refs = ["hello world", "foo bar", "the quick brown fox"] * 200
+
+    def factory():
+        return iter([(i, refs[i % len(refs)]) for i in range(300)])
+
+    def decode_fn(_model, batch):
+        _i, gt = batch
+        return [gt], [gt]   # perfect
+
+    return TrainConfig(
+        base_lr=1e-3, warmup_steps=0, total_steps=200,
+        micro_batch_size=1, grad_accum_steps=1,
+        target_h=128, target_w=128, pad_multiple=32,
+        checkpoint=CheckpointConfig(
+            out_dir=out_dir, save_every=999, keep_last=3,
+        ),
+        val=ValConfig(every=1, max_batches=2),
+        val_batches_factory=factory,
+        val_loss_fn=loss_fn,
+        val_decode_fn=decode_fn,
+        val_decode_n=2,                  # cheap per-pass decode
+        val_decode_n_best=decode_n_best,  # the new knob
+    )
+
+
+def test_ckpt_best_carries_second_pass_metrics_when_decode_n_best_set(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    """DS-fix P2: with val_decode_n_best>0, every ckpt_best save fires
+    a second eval pass and the larger-sample CER / word_f1 land in
+    ckpt['extra']['best_candidate']."""
+    import copy
+
+    from vista_ocr.training.callbacks import load_checkpoint
+    from vista_ocr.training.train_loop import make_optimizer
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = _candidate_cfg(tmp_path, decode_n_best=64)
+
+    train(model, list(islice(cycle([sample]), 50)),
+          tokenizer, cfg, max_steps=3)
+
+    best = tmp_path / "ckpt_best.pt"
+    assert best.exists(), "ckpt_best.pt must exist after a val_loss improvement"
+
+    payload = load_checkpoint(
+        best, model=model, optimizer=make_optimizer(model, cfg),
+    )
+    cand = payload.extra.get("best_candidate")
+    assert cand is not None, (
+        "ckpt_best['extra']['best_candidate'] must carry the second-pass metrics"
+    )
+    # decode_fn returns perfect predictions, so cer/wer = 0, word_f1 = 1.
+    assert cand["val_cer"] == pytest.approx(0.0)
+    assert cand["val_word_f1"] == pytest.approx(1.0)
+    # The second pass decoded *more* batches than the first (n_best=64
+    # vs decode_n=2 per regular val pass).
+    assert cand["val_decoded_n"] > cfg.val_decode_n
+
+
+def test_ckpt_best_no_second_pass_when_decode_n_best_zero(
+    tiny_model: VistaOCR, tokenizer: VistaTokenizer, tmp_path,
+):
+    """DS-fix P2 back-compat: with val_decode_n_best=0 the prior
+    behaviour is preserved -- ckpt_best['extra'] does NOT carry a
+    'best_candidate' key, and the second pass does not fire."""
+    import copy
+
+    from vista_ocr.training.callbacks import load_checkpoint
+    from vista_ocr.training.train_loop import make_optimizer
+
+    model = copy.deepcopy(tiny_model)
+    sample = generate_sample(["hi"], SynthDogConfig(canvas_h=64, canvas_w=64, line_height=20))
+    cfg = _candidate_cfg(tmp_path, decode_n_best=0)
+
+    train(model, list(islice(cycle([sample]), 50)),
+          tokenizer, cfg, max_steps=3)
+
+    best = tmp_path / "ckpt_best.pt"
+    assert best.exists()
+    payload = load_checkpoint(
+        best, model=model, optimizer=make_optimizer(model, cfg),
+    )
+    assert "best_candidate" not in payload.extra

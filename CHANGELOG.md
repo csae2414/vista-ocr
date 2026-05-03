@@ -12,6 +12,23 @@ Three blockers from a data-scientist review. This entry is Phase 1
 
 ### Changed
 
+- **`ckpt_best` candidates get a second-pass low-noise eval**
+  (`TrainConfig.val_decode_n_best`, default 256 in stage scripts; 0
+  preserves the prior behaviour). Every val pass keeps `decode_n=5`
+  so the per-step log line is cheap; when a val pass clears
+  ``val_loss < best_val_loss`` the train loop fires a *second*
+  ``run_validation`` call with ``decode_n=val_decode_n_best`` samples
+  and writes the resulting CER / WER / word-F1 into the checkpoint
+  under ``extra["best_candidate"]``. A structured ``BEST_CANDIDATE:``
+  log line lands in the supervisor log alongside the existing
+  ``EARLY_STOP:`` line so the side-process tailer parses both. Stage
+  scripts get a ``--decode-n-best`` flag; ``pretrain_chain.sh``
+  forwards ``DECODE_N_BEST``. 2 tests in ``tests/test_training.py``.
+
+  Closes the "ckpt_best is selected against a 5-sample noise floor"
+  half of DS-review item #2; the other half (flip the criterion to
+  word-F1) is Phase 3.
+
 - **PDFA shards are split into a strict val + a strict test set**
   (`src/vista_ocr/data/split.py`). Shard 0118 is the val shard used
   for ``ckpt_best`` selection during training; shard 0119 is the
