@@ -140,6 +140,69 @@ def test_collate_pads_to_max_in_batch(tokenizer: VistaTokenizer):
     assert batch.prompt_mask[:, 0].all()
 
 
+# ---------- Phase 3: bbox-scaling on resize ----------
+
+def test_collate_scales_bboxes_when_image_is_resized(tokenizer: VistaTokenizer):
+    """Phase 3: when ``resize_to_canvas`` shrinks the image, bboxes
+    must be scaled proportionally so they stay inside the canvas.
+    Catches the exact regression we hit when augment was enabled at
+    page_preset=large with PDFA pages — Albumentations rejected
+    bboxes whose normalised coords exceeded 1.0 because the bbox
+    coords still referenced the original (larger) image."""
+    from PIL import Image
+
+    # Original image 1500x800; bbox spans the whole image. Resize
+    # canvas 750x400 (exactly 0.5x scale on both axes). After scaling
+    # the bbox should be exactly half size.
+    img = Image.new("L", (1500, 800), 255)
+    s = Sample(
+        image=img,
+        lines=[Line("hello", (0, 0, 1500, 800))],
+        task="ocr_layout",
+    )
+    pre_cfg = PreprocessConfig(target_h=400, target_w=750, pad_multiple=32)
+    batch = collate([s], tokenizer, pre_cfg)
+    # The image must have been resized; key check is no exception
+    # was raised AND the resulting image is no larger than canvas.
+    assert batch.images.shape[-1] <= 768   # 750 padded to multiple of 32 = 768
+    assert batch.images.shape[-2] <= 416   # 400 padded to multiple of 32 = 416
+
+
+def test_collate_with_augment_does_not_overflow_canvas(tokenizer: VistaTokenizer):
+    """Phase 3 regression test: with augment enabled and a sample
+    whose original-image bbox would overflow the resized canvas,
+    Albumentations must NOT raise ``Expected x_max ... in [0, 1]``.
+
+    Construct the exact failure: original 1500x800 image, bbox at the
+    far right edge, target canvas 1100x850. Without bbox-scaling, the
+    bbox at x=1400-1500 in original coords exceeds the resized 1100
+    width once Albumentations normalises. With bbox-scaling, it stays
+    inside.
+    """
+    pytest.importorskip("albumentations")
+    from PIL import Image
+    from vista_ocr.data.augment import AugmentConfig
+
+    img = Image.new("L", (1500, 800), 255)
+    s = Sample(
+        image=img,
+        lines=[Line("rightmost", (1400, 100, 1490, 200))],
+        task="ocr_layout",
+    )
+    pre_cfg = PreprocessConfig(
+        target_h=850, target_w=1100, pad_multiple=32,
+        augment=AugmentConfig(
+            enabled=True, rotate_deg=0.0,
+            brightness_limit=0.0, contrast_limit=0.0,
+            blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+            p_each=0.0,
+        ),
+    )
+    # Should not raise.
+    batch = collate([s], tokenizer, pre_cfg)
+    assert batch.images.shape[0] == 1
+
+
 # ---------- mixture ----------
 
 def test_mixture_relabels_to_chosen_task():

@@ -121,16 +121,27 @@ def collate(
     seqs: list[list[int]] = []
     prompt_lens: list[int] = []
 
+    from dataclasses import replace as _replace  # noqa: PLC0415
     for s in samples:
         if isinstance(s.image, torch.Tensor):
             t = s.image if s.image.dim() == 4 else s.image.unsqueeze(0)
         else:
-            img, _, _ = resize_to_canvas(s.image, pre_cfg)
+            img, scale, _ = resize_to_canvas(s.image, pre_cfg)
+            if scale != 1.0 and s.lines:
+                # Bboxes were computed against the original image; the
+                # image was just resized by ``scale``. Without this rescale
+                # the bbox coords overflow the resized canvas and any
+                # downstream consumer (Albumentations, the spatial-token
+                # quantiser) sees inconsistent geometry.
+                scaled_lines = []
+                for line in s.lines:
+                    bb = BBox.from_xyxy(*line.bbox).scale(sx=scale, sy=scale)
+                    scaled_lines.append(_replace(line, bbox=bb.to_xyxy()))
+                s = _replace(s, lines=scaled_lines)
             if augmenter is not None:
                 img, aug_lines = augmenter(img, s.lines)
                 # Build a shadow Sample so build_target_ids sees the
                 # augmented bboxes without mutating the caller's object.
-                from dataclasses import replace as _replace  # noqa: PLC0415
                 s = _replace(s, image=img, lines=aug_lines)
             img, _ = pad_to_multiple(img, pre_cfg.pad_multiple)
             t = to_tensor(img)
