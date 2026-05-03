@@ -97,14 +97,35 @@ if [[ "$GRAD_CKPT" == "0" ]]; then
   SPEED_FLAGS+=(--no-grad-ckpt)
 fi
 
-# Discover shards dynamically; reserve the highest-indexed shard for val.
+# Locked PDFA split (see src/vista_ocr/data/split.py):
+#   shard 0118 = val  (used for ckpt_best selection)
+#   shard 0119 = test (touched only by scripts/eval_run.sh)
+# Both are excluded from --train-shards so ckpt_best selection cannot
+# leak into the test set, and dynamic shard counts cannot silently
+# shift which shard is val.
+VAL_BASE="pdfa-eng-train-0118.tar"
+TEST_BASE="pdfa-eng-train-0119.tar"
+VAL="data/raw/pdfa/${VAL_BASE}"
+TEST="data/raw/pdfa/${TEST_BASE}"
+if [[ ! -f "$VAL" ]]; then
+  echo "Locked val shard missing: $VAL"; exit 1
+fi
+if [[ ! -f "$TEST" ]]; then
+  echo "Locked test shard missing: $TEST"; exit 1
+fi
 mapfile -t ALL_SHARDS < <(ls -1 data/raw/pdfa/pdfa-eng-train-*.tar 2>/dev/null | sort)
-if [[ ${#ALL_SHARDS[@]} -lt 2 ]]; then
-  echo "Need at least 2 PDFA shards. Run scripts/setup_data.sh first."
+TRAIN_SHARDS=()
+for s in "${ALL_SHARDS[@]}"; do
+  base="$(basename "$s")"
+  if [[ "$base" == "$VAL_BASE" || "$base" == "$TEST_BASE" ]]; then
+    continue
+  fi
+  TRAIN_SHARDS+=("$s")
+done
+if [[ ${#TRAIN_SHARDS[@]} -lt 1 ]]; then
+  echo "Need at least 1 train shard (separate from val 0118 and test 0119)."
   exit 1
 fi
-VAL="${ALL_SHARDS[-1]}"
-TRAIN_SHARDS=("${ALL_SHARDS[@]:0:${#ALL_SHARDS[@]}-1}")
 SPM=data/processed/vocab/sp_en_16k.model
 
 mkdir -p logs checkpoints
@@ -112,6 +133,7 @@ mkdir -p logs checkpoints
 echo "=== $(date -Is)  data ==="
 echo "  train shards     : ${#TRAIN_SHARDS[@]}"
 echo "  val shard        : $VAL"
+echo "  test shard (held): $TEST  (untouched by training; eval_run.sh only)"
 echo "  spm              : $SPM"
 echo "  init_decoder_from: $INIT_DECODER_FROM"
 echo "  grad_accum_steps : $GRAD_ACCUM_STEPS"

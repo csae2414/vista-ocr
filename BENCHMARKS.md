@@ -35,9 +35,20 @@ only the OCR+layout task while stage-3 trains on a four-task mix.
 
 ## PDFA hold-out: greedy generation eval
 
-Long-form eval on the same held-out PDFA shard, 100 batches. Run with:
+> **Split note (2026-05-03 onward).** Two PDFA shards are now reserved at
+> the dataset boundary (see `src/vista_ocr/data/split.py`):
+> shard **0118** is the val shard used during training for `ckpt_best`
+> selection; shard **0119** is the test shard, touched only by
+> `scripts/eval_run.sh`. The numbers below were generated against shard
+> 0119 *before* the split was locked, so for them shard 0119 was the
+> training-time val shard -- **not** a strict held-out test set. Rows
+> generated after this date are strict held-out.
+
+Long-form eval on the locked PDFA test shard (0119), 100 batches. Run with:
 
 ```
+./scripts/eval_run.sh checkpoints/stage3/ckpt_best.pt logs/eval.json
+# or, equivalently:
 python scripts/eval_pdfa_holdout.py \
   --ckpt checkpoints/stage3/ckpt_best.pt \
   --val-shard data/raw/pdfa/pdfa-eng-train-0119.tar \

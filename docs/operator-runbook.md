@@ -133,8 +133,21 @@ tmux new-session -d -s launcher ./scripts/launch_when_ready.sh
 
 ## 4. Hold-out evaluation
 
+The PDFA shards are split into three roles
+(see ``src/vista_ocr/data/split.py``):
+
+| Role | Shard basename | Touched by |
+|---|---|---|
+| Train | every other shard (0000..0117) | stage1/2/3_run.py |
+| Val   | ``pdfa-eng-train-0118.tar`` | training (ckpt_best selection) |
+| Test  | ``pdfa-eng-train-0119.tar`` | ``scripts/eval_run.sh`` only |
+
+Stage scripts call ``assert_not_test_shard`` on every shard argument
+and refuse to start if the test shard sneaks into ``--val-shard`` or
+``--train-shards``. Run the held-out eval with:
+
 ```bash
-# Reproducible eval -- fixed flags, deterministic seed.
+# Reproducible eval -- fixed flags, deterministic seed, locked test shard.
 ./scripts/eval_run.sh checkpoints/stage3/ckpt_best.pt logs/run_A.json
 ./scripts/eval_run.sh checkpoints/stage3/ckpt_final.pt logs/run_A_final.json
 ```

@@ -38,6 +38,7 @@ import torch  # noqa: E402
 from vista_ocr.data.augment import AugmentConfig  # noqa: E402
 from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader  # noqa: E402
 from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
+from vista_ocr.data.split import assert_not_test_shard  # noqa: E402
 from vista_ocr.logging_config import setup_logging  # noqa: E402
 from vista_ocr.models.decoder import small_random_decoder  # noqa: E402
 from vista_ocr.models.encoder import FCNEncoderWidther  # noqa: E402
@@ -140,6 +141,12 @@ def main() -> None:
                     help="Vals to skip before patience starts counting.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
+
+    # Refuse the locked PDFA test shard at any training-time entry point.
+    # The test shard is touched only by scripts/eval_run.sh.
+    assert_not_test_shard(args.val_shard)
+    for s in args.train_shards:
+        assert_not_test_shard(s)
 
     args.out.mkdir(parents=True, exist_ok=True)
     setup_logging(level="INFO", log_file=args.out / "stage1.log")

@@ -4,6 +4,33 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — Eval methodology, round 2 (DS review blockers)
+
+Three blockers from a data-scientist review. This entry is Phase 1
+(val/test split). Phases 2 (decode_n_best second-pass eval) and 3
+(select on val_word_f1 not val_loss) follow.
+
+### Changed
+
+- **PDFA shards are split into a strict val + a strict test set**
+  (`src/vista_ocr/data/split.py`). Shard 0118 is the val shard used
+  for ``ckpt_best`` selection during training; shard 0119 is the
+  test shard, touched only by ``scripts/eval_run.sh``. Previously
+  ``pretrain_chain.sh`` used "the highest-indexed shard" as val,
+  meaning the same shard was selected against across all three
+  stages -- ckpt_best had effectively been tuned on the held-out
+  set after 30+ improvement events. ``stage{1,2,3}_run.py`` call
+  ``assert_not_test_shard`` on every shard argument and refuse to
+  start when the test shard appears in ``--val-shard`` or
+  ``--train-shards``. ``eval_run.sh`` accepts ``TEST_SHARD`` (with a
+  one-cycle deprecated ``VAL_SHARD`` shim that warns). 5 tests in
+  ``tests/test_split_isolation.py``.
+
+  BENCHMARKS rows generated before this date were against shard
+  0119 *as the training-time val shard*, so they are not strict
+  held-out test numbers. A header note in ``BENCHMARKS.md`` flags
+  this; rows generated after are strict.
+
 ## 2026-05-03 — Defect fixes after Run B engineering pass
 
 Three defects from a senior-dev review of the Run B pass.

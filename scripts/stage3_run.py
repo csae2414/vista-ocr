@@ -28,6 +28,7 @@ from vista_ocr.data.collate import collate  # noqa: E402
 from vista_ocr.data.mixture import MixedTaskStream, TaskMix  # noqa: E402
 from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa  # noqa: E402
 from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
+from vista_ocr.data.split import assert_not_test_shard  # noqa: E402
 from vista_ocr.logging_config import setup_logging  # noqa: E402
 from vista_ocr.models.decoder import small_random_decoder  # noqa: E402
 from vista_ocr.models.encoder import FCNEncoderWidther  # noqa: E402
@@ -106,6 +107,11 @@ def main() -> None:
     ap.add_argument("--early-stop-min-delta", type=float, default=0.01)
     ap.add_argument("--early-stop-warmup", type=int, default=5)
     args = ap.parse_args()
+
+    # Refuse the locked PDFA test shard (see vista_ocr.data.split).
+    assert_not_test_shard(args.val_shard)
+    for s in args.train_shards:
+        assert_not_test_shard(s)
 
     args.out.mkdir(parents=True, exist_ok=True)
     setup_logging(level="INFO", log_file=args.out / "stage3.log")
