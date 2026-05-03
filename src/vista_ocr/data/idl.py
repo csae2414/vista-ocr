@@ -25,6 +25,15 @@ class IdlConfig:
     shards: list[str]
     drop_non_latin: bool = True
     drop_blank: bool = True
+    # Mirrors :class:`vista_ocr.data.pdfa.PdfaConfig.cycle`: when True
+    # the pipeline reshuffles shards on each pass, runs a sample-level
+    # shuffle buffer, and repeats indefinitely. Use it when this loader
+    # is one source in a long-running mixture so the mixture's weight
+    # ratio stays honoured (without cycling, IDL exhausts first and
+    # the mixture silently collapses to PDFA-only).
+    cycle: bool = False
+    cycle_shuffle_buffer: int = 1000
+    cycle_seed: int = 0
 
 
 def _decode_idl_record(record: dict) -> Sample | None:
@@ -60,7 +69,13 @@ def _decode_idl_record(record: dict) -> Sample | None:
 def iter_idl(cfg: IdlConfig) -> Iterator[Sample]:
     import webdataset as wds  # noqa: PLC0415
 
-    pipeline = wds.WebDataset(cfg.shards, shardshuffle=False)
+    pipeline = wds.WebDataset(
+        cfg.shards,
+        shardshuffle=cfg.cycle,
+        seed=cfg.cycle_seed if cfg.cycle else None,
+    )
+    if cfg.cycle:
+        pipeline = pipeline.shuffle(cfg.cycle_shuffle_buffer).repeat()
     for raw in pipeline:
         sample = _decode_idl_record(raw)
         if sample is None:

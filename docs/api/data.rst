@@ -22,6 +22,7 @@ Multi-worker DataLoader
 -----------------------
 
 .. automodule:: vista_ocr.data.dataloader
+   :members: DataLoaderConfig, make_pdfa_dataloader, make_mixed_pdfa_idl_loader
 
 Multi-task mixture sampler
 --------------------------
