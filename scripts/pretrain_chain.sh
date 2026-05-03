@@ -23,6 +23,9 @@
 #   GRAD_CKPT           default 1       (0=disable encoder gradient
 #                                       checkpointing for ~30-50% encoder
 #                                       speedup; safe on 48 GB+ cards)
+#   NUM_WORKERS         default 4       (raise to 8 on a fast box with
+#                                       data-pipeline-bound GPU util)
+#   PREFETCH_FACTOR     default 4       (per-worker prefetch buffer)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -57,6 +60,9 @@ PAGE_PRESET="${PAGE_PRESET:-medium}"
 # on 48 GB+ cards at the cost of activation memory).
 SDPA="${SDPA:-0}"
 GRAD_CKPT="${GRAD_CKPT:-1}"
+# Data pipeline knobs.
+NUM_WORKERS="${NUM_WORKERS:-4}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
 
 AUG_FLAG=()
 if [[ "$AUGMENT" == "1" ]]; then
@@ -93,6 +99,8 @@ echo "  page_preset      : $PAGE_PRESET"
 echo "  steps            : ${STAGE1_STEPS} / ${STAGE2_STEPS} / ${STAGE3_STEPS}"
 echo "  sdpa             : $SDPA"
 echo "  grad_ckpt        : $GRAD_CKPT"
+echo "  num_workers      : $NUM_WORKERS"
+echo "  prefetch_factor  : $PREFETCH_FACTOR"
 echo
 
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="
@@ -103,6 +111,7 @@ python scripts/stage1_run.py \
   --steps "$STAGE1_STEPS" --val-every 500 --ckpt-every 500 \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}"
@@ -116,6 +125,7 @@ python scripts/stage2_run.py \
   --init-from checkpoints/stage1/ckpt_best.pt \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+  --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}"

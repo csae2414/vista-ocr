@@ -68,6 +68,8 @@ def main() -> None:
                     help="Page resolution preset. 'auto' queries CUDA VRAM. "
                          "Default 'medium' = 1100x850 (24 GB 3090).")
     ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--prefetch-factor", type=int, default=4,
+                    help="Per-worker prefetch buffer.")
     ap.add_argument("--val-every", type=int, default=2000)
     ap.add_argument("--val-batches", type=int, default=20)
     ap.add_argument("--ckpt-every", type=int, default=2000)
@@ -134,7 +136,8 @@ def main() -> None:
         shards=[str(p) for p in args.train_shards],
         tokenizer=tokenizer, pre_cfg=pre_cfg,
         dl_cfg=DataLoaderConfig(
-            micro_batch_size=1, num_workers=args.num_workers, prefetch_factor=4,
+            micro_batch_size=1, num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
         ),
     )
     spatial_ids = tokenizer._spatial_ids
