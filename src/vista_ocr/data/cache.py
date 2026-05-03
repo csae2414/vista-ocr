@@ -49,8 +49,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from vista_ocr.data.types import Sample
-from vista_ocr.tokenizer.tokenizer import Line
+from vista_ocr.data.types import Line, Sample
 
 LOG = logging.getLogger(__name__)
 

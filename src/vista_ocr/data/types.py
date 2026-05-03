@@ -1,4 +1,11 @@
-"""Shared dataclasses for VISTA-OCR data pipelines."""
+"""Shared dataclasses for VISTA-OCR data pipelines.
+
+``Line`` is defined alongside the tokenizer (it is the layout primitive
+both halves of the codebase round-trip through), and re-exported here
+so data modules import their types from a data module rather than
+reaching into ``vista_ocr.tokenizer``. The canonical definition stays
+in ``vista_ocr.tokenizer.tokenizer`` to avoid circular imports.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,6 +15,8 @@ import torch
 from PIL import Image
 
 from vista_ocr.tokenizer.tokenizer import Line
+
+__all__ = ["Line", "Sample", "TaskName"]
 
 TaskName = Literal["ocr", "ocr_layout", "region_ocr", "find_it"]
 

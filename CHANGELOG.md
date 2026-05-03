@@ -23,6 +23,14 @@ Three defects from a senior-dev review of the Run B pass.
 
 ### Fixed
 
+- **`Line` re-exported from `vista_ocr.data.types`**. The canonical
+  definition stays in `vista_ocr.tokenizer.tokenizer` (avoids a
+  circular import with the spatial-token machinery), but data
+  modules now import it from `vista_ocr.data.types` so the
+  layering smell of ``cache.py`` reaching into the tokenizer
+  package is gone. Other data adapters can migrate at their leisure
+  -- the old import path remains valid.
+
 - **Mixed loader silently dropped IDL when `len(idl_shards) < num_workers`**
   (`make_mixed_pdfa_idl_loader`). With ``num_workers=8`` and a 2-shard
   IDL set, the previous slice ``shards[worker_id::num_workers]`` left
