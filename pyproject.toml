@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vista-ocr"
-version = "0.0.1"
+version = "0.1.0"
 description = "Reimplementation of VISTA-OCR (Hamdi et al., 2025, arXiv:2504.03621)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,6 +14,32 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
 ]
+# Runtime deps (no torch -- torch lives in optional-dependencies so the
+# operator picks the matching CUDA/CPU wheel via --extra-index-url).
+dependencies = [
+    "transformers>=4.44,<4.45",
+    "sentencepiece>=0.2",
+    "webdataset>=0.2.96",
+    "pillow>=10",
+    "albumentations>=1.4,<2",
+    "jiwer>=3",
+    "pypdfium2>=4",
+    "numpy<3",
+]
+
+[project.optional-dependencies]
+# Pair each torch extra with the matching --extra-index-url:
+#   pip install -e ".[cpu]"        --extra-index-url https://download.pytorch.org/whl/cpu
+#   pip install -e ".[gpu-cu121]"  --extra-index-url https://download.pytorch.org/whl/cu121
+#   pip install -e ".[gpu-cu124]"  --extra-index-url https://download.pytorch.org/whl/cu124
+cpu       = ["torch>=2.4,<2.6"]
+gpu-cu121 = ["torch>=2.4,<2.6"]
+gpu-cu124 = ["torch>=2.4,<2.6"]
+tb        = ["tensorboard>=2.16"]
+dev       = ["pytest>=8", "sphinx>=7", "ruff"]
+
+[project.scripts]
+vista-ocr = "vista_ocr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
