@@ -267,3 +267,53 @@ def test_installed_console_script_help_lists_verbs():
     assert r.returncode == 0
     for verb in ("eval", "finetune", "infer", "cache"):
         assert verb in r.stdout, f"verb {verb} missing from CLI --help"
+
+
+# ---------------- Nested subverb: vista-ocr stage <N> --help
+
+
+@pytest.mark.parametrize("stage_n", ["1", "2", "3"])
+def test_stage_subverb_help_routes_correctly(stage_n: str, capsys):
+    """``vista-ocr stage <N> --help`` is two-level argparse subparser
+    routing. Tests that each stage's parser is reachable and prints
+    its own flag set (not the dispatcher's or another stage's)."""
+    from vista_ocr.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["stage", stage_n, "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    # Every stage parser declares --train-shards + --val-shard +
+    # --spm + --out as required.
+    for required_flag in ("--train-shards", "--val-shard", "--spm", "--out"):
+        assert required_flag in out, (
+            f"`vista-ocr stage {stage_n} --help` missing {required_flag}"
+        )
+
+
+def test_stage_subverb_routes_to_right_run_function():
+    """A regression check on the dispatcher wiring: argparse should
+    set ``_verb_run`` to the correct stage module's ``run`` for each
+    nested subverb."""
+    import importlib
+
+    from vista_ocr.cli import build_parser
+
+    parser = build_parser()
+    for stage_n in ("1", "2", "3"):
+        # Pass minimal valid required args via a bare invocation; we
+        # only care about which run function got bound.
+        try:
+            args = parser.parse_args([
+                "stage", stage_n,
+                "--train-shards", "/x.tar",
+                "--val-shard", "/y.tar",
+                "--spm", "/z.model",
+                "--out", "/tmp/out",
+            ])
+        except SystemExit:
+            pytest.fail(f"`stage {stage_n}` argparse failed to parse")
+        expected_module = f"vista_ocr.entrypoints.stage{stage_n}"
+        assert args._verb_run is importlib.import_module(expected_module).run, (
+            f"stage {stage_n} did not route to {expected_module}.run"
+        )

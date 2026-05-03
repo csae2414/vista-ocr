@@ -51,6 +51,16 @@ def _parse_record(rec: dict[str, Any], line_no: int) -> tuple[str, dict]:
         raise _err(line_no, f"record must be a JSON object, got {type(rec).__name__}")
 
     version = rec.get("version", 1)
+    # Strict type check: ``1.0`` (float) and ``"1"`` (str) silently
+    # equal ``1`` in Python's ``in`` operator / numeric comparison,
+    # which is the wrong semantic for a schema-version field. Reject
+    # anything that's not a plain int (excluding bool, which subclasses
+    # int).
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise _err(
+            line_no,
+            f"'version' must be an integer; got {version!r} ({type(version).__name__})",
+        )
     if version not in SUPPORTED_VERSIONS:
         raise _err(
             line_no,
@@ -181,5 +191,10 @@ def _validate_for_write(rec: dict, line_no: int) -> None:
     if task not in VALID_TASKS:
         raise _err(line_no, f"task={task!r} not in {VALID_TASKS}")
     version = rec.get("version", 1)
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise _err(
+            line_no,
+            f"'version' must be an integer; got {version!r}",
+        )
     if version not in SUPPORTED_VERSIONS:
         raise _err(line_no, f"unsupported version {version!r}")

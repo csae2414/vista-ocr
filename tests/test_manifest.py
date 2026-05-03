@@ -91,6 +91,40 @@ def test_unknown_version_rejected(tmp_path: Path):
         list(iter_manifest(mfst))
 
 
+def test_float_version_rejected_even_when_numerically_equal(tmp_path: Path):
+    """``1.0`` numerically equals ``1`` in Python, so a naive
+    ``version in (1,)`` check would accept it. The schema treats
+    'version' as a strict integer field; this test pins that."""
+    img = tmp_path / "001.jpg"
+    _img(img)
+    mfst = tmp_path / "m.jsonl"
+    mfst.write_text(json.dumps({"image": "001.jpg", "ref": "x", "version": 1.0}) + "\n")
+    with pytest.raises(ValueError, match="must be an integer"):
+        list(iter_manifest(mfst))
+
+
+def test_bool_version_rejected(tmp_path: Path):
+    """``True`` is an int subclass in Python (bool); without a guard
+    it would silently equal ``1``. Reject explicitly."""
+    img = tmp_path / "001.jpg"
+    _img(img)
+    mfst = tmp_path / "m.jsonl"
+    # JSON serialises bool as `true`; manually craft to bypass json's
+    # encoder coercing.
+    mfst.write_text('{"image": "001.jpg", "ref": "x", "version": true}\n')
+    with pytest.raises(ValueError, match="must be an integer"):
+        list(iter_manifest(mfst))
+
+
+def test_string_version_rejected(tmp_path: Path):
+    img = tmp_path / "001.jpg"
+    _img(img)
+    mfst = tmp_path / "m.jsonl"
+    mfst.write_text(json.dumps({"image": "001.jpg", "ref": "x", "version": "1"}) + "\n")
+    with pytest.raises(ValueError, match="must be an integer"):
+        list(iter_manifest(mfst))
+
+
 def test_missing_required_field_rejected(tmp_path: Path):
     mfst = tmp_path / "m.jsonl"
     mfst.write_text(json.dumps({"image": "x.jpg"}) + "\n")  # no ref
