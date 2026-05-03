@@ -1,4 +1,4 @@
-"""Multi-worker DataLoader for PDFA shards.
+"""Multi-worker DataLoader for PDFA shards (and PDFA + IDL mixtures).
 
 The slow CPU work in our pipeline -- PDF rasterization at 200 dpi,
 deskew/rectify, tokenization, batch collation -- runs single-threaded in
@@ -9,11 +9,33 @@ serially. This module wraps ``iter_pdfa`` in a
 :class:`~torch.utils.data.DataLoader` with workers + prefetch so the GPU
 is fed continuously.
 
-Worker sharding strategy:
+Worker sharding strategy
+------------------------
 
-- Worker ``i`` of ``N`` reads ``shards[i::N]``.
-- If there's only one shard or ``num_workers == 0``, falls back to the
-  single-process iterator.
+The PDFA-only loader (:class:`_IterablePdfaDataset`) gives worker ``i``
+of ``N`` the slice ``shards[i::N]``. When there's only one shard or
+``num_workers == 0``, falls back to the single-process iterator.
+
+The mixed PDFA + IDL loader (:class:`_IterableMixedDataset`) uses the
+same per-source slice but adds an explicit policy for the case when
+one source has fewer shards than ``num_workers`` -- e.g. 12 IDL shards
+across 16 workers. Without intervention, the high-id workers see an
+empty IDL slice and fall back to PDFA-only, which **silently distorts
+the global mix ratio**.
+
+Two policies are supported via the ``on_short_shards`` flag on
+:func:`make_mixed_pdfa_idl_loader`:
+
+- ``"broadcast"`` (default): every worker reads ALL shards of the
+  under-sourced side. Per-worker prime-hashed seeds keep their sample
+  draws independent. Throughput is preserved, but each unique sample
+  appears ``N`` times across the worker pool per pass; gradient noise
+  reduction is altered relative to a non-broadcast setup. A WARNING
+  is logged when this kicks in.
+- ``"cap"``: silently downgrade ``num_workers`` for the affected
+  source. Workers above the shard count get an empty slice and yield
+  nothing. Preserves "each shard read once per worker per epoch"
+  semantics at the cost of pipeline parallelism.
 """
 from __future__ import annotations
 
@@ -130,6 +152,54 @@ def make_pdfa_dataloader(
     )
 
 
+def _per_worker_cycle_seed(base_seed: int, worker_id: int) -> int:
+    """Prime-hashed per-worker seed.
+
+    A naive ``base_seed + worker_id`` produces consecutive integers
+    that some downstream RNGs treat as correlated draws. Two large
+    primes mixed in give workers seeds that look independent under
+    any reasonable ``random.Random(seed)``-style consumer.
+    """
+    # 100003 and 31 are both prime; the offset by ``base_seed`` is
+    # mixed in *first* so callers can still reseed an entire run by
+    # changing only the base.
+    return (base_seed * 100003) ^ (worker_id * 31)
+
+
+def _slice_with_policy(
+    shards: list[str],
+    *,
+    worker_id: int | None,
+    num_workers: int | None,
+    on_short_shards: str,
+) -> tuple[list[str], bool]:
+    """Compute one worker's shard slice under the chosen short-shards policy.
+
+    Returns ``(shards_for_this_worker, did_broadcast)``.
+
+    Single-process (``worker_id is None``) always returns the full
+    list. The interesting case is ``len(shards) < num_workers``:
+
+    * ``broadcast``: every worker reads ALL shards.
+    * ``cap``: workers with ``id >= len(shards)`` get an empty list.
+    """
+    if worker_id is None or num_workers is None:
+        return list(shards), False
+    if not shards:
+        return [], False
+    if len(shards) >= num_workers:
+        return shards[worker_id::num_workers], False
+    if on_short_shards == "broadcast":
+        return list(shards), True
+    if on_short_shards == "cap":
+        if worker_id >= len(shards):
+            return [], False
+        return shards[worker_id::num_workers], False
+    raise ValueError(
+        f"on_short_shards must be 'broadcast' or 'cap', got {on_short_shards!r}",
+    )
+
+
 class _IterableMixedDataset(IterableDataset):
     """Per-worker mixed-source iterator yielding pre-collated batches.
 
@@ -137,6 +207,10 @@ class _IterableMixedDataset(IterableDataset):
     (PDFA + IDL) via :class:`MixedStream`. Each worker gets a slice of
     BOTH shard lists; mixing happens at the per-worker level so the
     weight ratio is preserved within each worker's stream.
+
+    See module docstring for the ``on_short_shards`` policy that
+    governs what happens when one source has fewer shards than
+    ``num_workers``.
     """
 
     def __init__(
@@ -151,6 +225,7 @@ class _IterableMixedDataset(IterableDataset):
         pdfa_cfg_kwargs: dict | None = None,
         idl_cfg_kwargs: dict | None = None,
         seed: int = 0,
+        on_short_shards: str = "broadcast",
     ) -> None:
         super().__init__()
         self.pdfa_shards = pdfa_shards
@@ -163,29 +238,64 @@ class _IterableMixedDataset(IterableDataset):
         self.pdfa_cfg_kwargs = pdfa_cfg_kwargs or {}
         self.idl_cfg_kwargs = idl_cfg_kwargs or {}
         self.seed = seed
-
-    def _slice_for_worker(self, shards: list[str]) -> list[str]:
-        info = get_worker_info()
-        if info is None:
-            return list(shards)
-        return shards[info.id::info.num_workers]
+        self.on_short_shards = on_short_shards
 
     def __iter__(self) -> Iterator[Batch]:
-        pdfa_slice = self._slice_for_worker(self.pdfa_shards)
-        idl_slice = self._slice_for_worker(self.idl_shards)
-        # Per-worker seed so different workers don't re-roll the same
-        # mix sequence (would wash out the diversity benefit).
         info = get_worker_info()
-        worker_seed = self.seed + (info.id if info is not None else 0)
+        wid = info.id if info is not None else None
+        nworkers = info.num_workers if info is not None else None
+
+        pdfa_slice, pdfa_bcast = _slice_with_policy(
+            self.pdfa_shards, worker_id=wid, num_workers=nworkers,
+            on_short_shards=self.on_short_shards,
+        )
+        idl_slice, idl_bcast = _slice_with_policy(
+            self.idl_shards, worker_id=wid, num_workers=nworkers,
+            on_short_shards=self.on_short_shards,
+        )
+
+        if (pdfa_bcast or idl_bcast) and (wid == 0 or wid is None):
+            # Log once per epoch (only worker 0 emits) so the operator
+            # sees the gradient-noise consequence is in effect.
+            LOG.warning(
+                "Mixed loader: num_workers (%d) exceeds shard count for "
+                "an under-sourced side (pdfa=%d, idl=%d). Broadcasting "
+                "the under-sourced shards to all workers; effective "
+                "gradient noise structure differs from a non-broadcast "
+                "setup. Consider reducing num_workers or downloading "
+                "more shards if this matters for your experiment.",
+                nworkers, len(self.pdfa_shards), len(self.idl_shards),
+            )
+
+        worker_seed = (
+            _per_worker_cycle_seed(self.seed, wid) if wid is not None
+            else self.seed
+        )
+
+        def _maybe_per_worker_seed(cfg_kwargs: dict, broadcast: bool) -> dict:
+            """When broadcasting, override cycle_seed so workers reading
+            the same shard list don't yield identical sequences. The
+            non-broadcast slice path keeps the caller's cycle_seed."""
+            if not broadcast:
+                return cfg_kwargs
+            out = dict(cfg_kwargs)
+            out["cycle_seed"] = worker_seed
+            return out
 
         sources: list[MixedStreamSource] = []
         if pdfa_slice:
-            pdfa_cfg = PdfaConfig(shards=pdfa_slice, **self.pdfa_cfg_kwargs)
+            pdfa_cfg = PdfaConfig(
+                shards=pdfa_slice,
+                **_maybe_per_worker_seed(self.pdfa_cfg_kwargs, pdfa_bcast),
+            )
             sources.append(MixedStreamSource(
                 name="pdfa", weight=self.pdfa_weight, stream=iter_pdfa(pdfa_cfg),
             ))
         if idl_slice:
-            idl_cfg = IdlConfig(shards=idl_slice, **self.idl_cfg_kwargs)
+            idl_cfg = IdlConfig(
+                shards=idl_slice,
+                **_maybe_per_worker_seed(self.idl_cfg_kwargs, idl_bcast),
+            )
             sources.append(MixedStreamSource(
                 name="idl", weight=self.idl_weight, stream=iter_idl(idl_cfg),
             ))
@@ -215,6 +325,7 @@ def make_mixed_pdfa_idl_loader(
     pdfa_cfg_kwargs: dict | None = None,
     idl_cfg_kwargs: dict | None = None,
     seed: int = 0,
+    on_short_shards: str = "broadcast",
 ) -> DataLoader:
     """Multi-worker DataLoader over a weighted PDFA + IDL mixture.
 
@@ -223,6 +334,20 @@ def make_mixed_pdfa_idl_loader(
     'cycle': True}`` (and same for ``idl_cfg_kwargs``) for long
     training runs that would otherwise exhaust one source mid-mix
     and silently collapse to the other.
+
+    :param on_short_shards: policy when one source has fewer shards
+        than ``num_workers``.
+
+        * ``"broadcast"`` (default): every worker reads ALL shards of
+          the under-sourced side. Throughput preserved; per-worker
+          seed differentiation handled internally; one WARNING line
+          logged per epoch.
+        * ``"cap"``: workers above the shard count get an empty slice
+          for that source. Preserves the "each shard read once per
+          worker per epoch" semantics at the cost of pipeline
+          parallelism.
+
+        See the module docstring for the trade-off.
     """
     dl_cfg = dl_cfg or DataLoaderConfig()
     ds = _IterableMixedDataset(
@@ -236,6 +361,7 @@ def make_mixed_pdfa_idl_loader(
         pdfa_cfg_kwargs=pdfa_cfg_kwargs,
         idl_cfg_kwargs=idl_cfg_kwargs,
         seed=seed,
+        on_short_shards=on_short_shards,
     )
     return DataLoader(
         ds,

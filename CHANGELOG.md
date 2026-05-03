@@ -4,6 +4,28 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-03 — Defect fixes after Run B engineering pass
+
+Three defects from a senior-dev review of the Run B pass.
+
+### Fixed
+
+- **Mixed loader silently dropped IDL when `len(idl_shards) < num_workers`**
+  (`make_mixed_pdfa_idl_loader`). With ``num_workers=8`` and a 2-shard
+  IDL set, the previous slice ``shards[worker_id::num_workers]`` left
+  workers 2..7 with empty shard lists; the multinomial mixer kept its
+  weights but every IDL pull returned ``StopIteration``, so the
+  effective mix drifted to PDFA-only as the worker count grew.
+  ``_IterableMixedDataset`` now takes ``on_short_shards`` (``"broadcast"``
+  default, ``"cap"`` opt-in). Broadcast lets every worker read the full
+  short list, and a prime-hashed per-worker cycle seed
+  (``(base*100003) ^ (worker_id*31)``) keeps shuffle/cycle streams
+  independent. Worker 0 emits a single WARNING when broadcast triggers
+  so the operator sees the duplication. 15 new tests in
+  ``tests/test_dataloader.py`` (3 seed-helper, 6 slice-policy, 5
+  short-shard behaviour, 1 real ``DataLoader`` spawn with
+  ``num_workers=2``).
+
 ## 2026-05-03 — Run B engineering pass
 
 Eight phases shipped to support a longer + faster Run B on the L40S
