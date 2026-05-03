@@ -50,6 +50,18 @@ class PdfaConfig:
     # scripts/measure_pdfa_distribution.py).
     drop_above_lines: int | None = None
     drop_above_words: int | None = None
+    # When True, the WebDataset pipeline:
+    #   * shuffles the shard list each epoch (``shardshuffle=True``),
+    #   * adds an in-memory sample-level shuffle buffer, AND
+    #   * repeats indefinitely (``.repeat()``).
+    # Use this for long training runs that would otherwise exhaust
+    # data after one pass through the shards. The shard reshuffle on
+    # each cycle is what prevents the model from seeing the same
+    # sample sequence epoch after epoch (memorisation pulse from
+    # optimizer momentum aligning with a fixed sample order).
+    cycle: bool = False
+    cycle_shuffle_buffer: int = 1000
+    cycle_seed: int = 0
 
 
 def _norm_bbox_to_pixels(
@@ -168,7 +180,18 @@ def iter_pdfa(cfg: PdfaConfig) -> Iterator[Sample]:
     # empty_check=False so a per-worker shard slice that happens to be
     # empty (workers > shards) does not raise; the worker just yields
     # nothing and the DataLoader keeps draining the others.
-    pipeline = wds.WebDataset(cfg.shards, shardshuffle=False, empty_check=False)
+    pipeline = wds.WebDataset(
+        cfg.shards,
+        shardshuffle=cfg.cycle,
+        empty_check=False,
+        seed=cfg.cycle_seed if cfg.cycle else None,
+    )
+    if cfg.cycle:
+        # Per-sample shuffle buffer + indefinite repeat. The shard list
+        # is reshuffled on each pass when shardshuffle=True; combined
+        # with the sample-buffer shuffle this avoids the same
+        # epoch-to-epoch sample sequence.
+        pipeline = pipeline.shuffle(cfg.cycle_shuffle_buffer).repeat()
     for raw in pipeline:
         try:
             yield from _decode_pdfa_record(raw, cfg)
