@@ -33,7 +33,10 @@ from vista_ocr.models.vista_ocr import VistaOCR
 from vista_ocr.tokenizer.tokenizer import VistaTokenizer
 from vista_ocr.training.callbacks import (
     CheckpointConfig,
+    EarlyStopConfig,
+    EarlyStopState,
     ValConfig,
+    early_stop_decision,
     find_latest_checkpoint,
     load_checkpoint,
     prune_old_checkpoints,
@@ -79,6 +82,9 @@ class TrainConfig:
     val_loss_fn: object | None = None             # callable(model, batch) -> Tensor
     val_decode_fn: object | None = None           # callable(model, batch) -> (refs, hyps)
     val_decode_n: int = 0                         # >0 enables CER/WER on first N batches
+    # Early stopping (Phase 8). Off by default; on per-stage when
+    # operator opts in via ``--early-stop`` flag.
+    early_stop: "EarlyStopConfig | None" = None
     resume_from: Path | None = None               # explicit path to a ckpt_*.pt
     # A4: cosine schedule floor. 0.0 = decay to zero (old behaviour);
     # 0.05 keeps a tiny LR through the tail. Documented as fresh-runs-only
@@ -202,6 +208,7 @@ def train(
     optimizer.zero_grad(set_to_none=True)
     step = 0
     best_val_loss = float("inf")
+    early_stop_state = EarlyStopState()
 
     # Resume from checkpoint if requested or auto-discover the latest in
     # the configured checkpoint directory.
@@ -216,6 +223,11 @@ def train(
         )
         step = payload.step
         best_val_loss = payload.best_val_loss
+        # F2: restore early-stop state so a resumed run keeps counting
+        # patience from where the kill happened.
+        early_stop_state = EarlyStopState.from_dict(
+            payload.extra.get("early_stop_state"),
+        )
         LOG.info("Resumed from %s at step %d (best_val_loss=%.4f)",
                  resume_path, step, best_val_loss)
 
@@ -365,8 +377,49 @@ def train(
                     cfg.checkpoint.out_dir / "ckpt_best.pt",
                     step=step, model=model, optimizer=optimizer,
                     best_val_loss=best_val_loss,
-                    extra={"val_loss": val_stats["val_loss"]},
+                    extra={
+                        "val_loss": val_stats["val_loss"],
+                        "early_stop_state": early_stop_state.to_dict(),
+                    },
                 )
+
+            # Phase 8: early-stop decision after every val pass.
+            should_stop = False
+            stop_reason: str | None = None
+            if cfg.early_stop is not None and cfg.early_stop.enabled:
+                should_stop, stop_reason = early_stop_decision(
+                    val_loss=float(val_stats["val_loss"]),
+                    state=early_stop_state,
+                    cfg=cfg.early_stop,
+                )
+            if should_stop:
+                # F6: structured log line so the tailer parses it as
+                # an event, not a free-form INFO line.
+                LOG.info(
+                    "EARLY_STOP: step=%d reason=%s smoothed_best=%.4f "
+                    "patience=%d no_improve=%d spike=%d",
+                    step, stop_reason,
+                    early_stop_state.smoothed_best,
+                    cfg.early_stop.patience,
+                    early_stop_state.no_improve_counter,
+                    early_stop_state.spike_counter,
+                )
+                # Persist final ckpt with early-stop state so the next
+                # stage's loader can read it for forensics if it wants.
+                if cfg.checkpoint is not None and getattr(
+                    cfg.checkpoint, "save_final", True,
+                ):
+                    save_checkpoint(
+                        cfg.checkpoint.out_dir / "ckpt_final.pt",
+                        step=step, model=model, optimizer=optimizer,
+                        best_val_loss=best_val_loss,
+                        extra={
+                            "reason": "early_stop",
+                            "early_stop_reason": stop_reason,
+                            "early_stop_state": early_stop_state.to_dict(),
+                        },
+                    )
+                return history
 
         # Periodic checkpoint
         if cfg.checkpoint is not None and step > 0 and step % cfg.checkpoint.save_every == 0:
@@ -374,6 +427,7 @@ def train(
                 cfg.checkpoint.out_dir / f"ckpt_{step:08d}.pt",
                 step=step, model=model, optimizer=optimizer,
                 best_val_loss=best_val_loss,
+                extra={"early_stop_state": early_stop_state.to_dict()},
             )
             prune_old_checkpoints(cfg.checkpoint.out_dir, cfg.checkpoint.keep_last)
 

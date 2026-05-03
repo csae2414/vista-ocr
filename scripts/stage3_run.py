@@ -36,6 +36,7 @@ from vista_ocr.tokenizer.spatial_tokens import SpatialGrid  # noqa: E402
 from vista_ocr.tokenizer.tokenizer import VistaTokenizer  # noqa: E402
 from vista_ocr.training.callbacks import (  # noqa: E402
     CheckpointConfig,
+    EarlyStopConfig,
     ValConfig,
     load_checkpoint,
 )
@@ -96,6 +97,12 @@ def main() -> None:
                          "paper-comparable on a 24 GB 3090.")
     ap.add_argument("--no-grad-ckpt", action="store_true",
                     help="Disable encoder gradient checkpointing.")
+    ap.add_argument("--early-stop", action="store_true")
+    ap.add_argument("--early-stop-patience", type=int, default=15,
+                    help="Stage 3 (multitask) val is noisy; default "
+                         "patience higher than stage 2.")
+    ap.add_argument("--early-stop-min-delta", type=float, default=0.01)
+    ap.add_argument("--early-stop-warmup", type=int, default=5)
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -186,6 +193,15 @@ def main() -> None:
         # B3
         val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
         val_decode_n=args.decode_n,
+        early_stop=(
+            EarlyStopConfig(
+                enabled=True,
+                patience=args.early_stop_patience,
+                min_delta=args.early_stop_min_delta,
+                warmup_vals=args.early_stop_warmup,
+            )
+            if args.early_stop else None
+        ),
     )
 
     LOG.info("Stage-3 multitask pretraining: %d steps, lambda=%.2f, lr=%.2e",

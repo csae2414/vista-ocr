@@ -33,6 +33,145 @@ class CheckpointConfig:
 
 
 @dataclass
+class EarlyStopConfig:
+    """Production-ready early stopping for the val-loss curve.
+
+    Disabled by default. When enabled, the training loop returns
+    cleanly (exit code 0) once the smoothed val-loss has not improved
+    for ``patience`` consecutive val passes, OR the raw val-loss has
+    spiked above the smoothed-best by more than ``spike_threshold``
+    for ``spike_consecutive`` consecutive passes.
+
+    The state ``(no_improve_counter, smoothed_best, val_history,
+    spike_counter)`` is persisted into the checkpoint's ``extra``
+    dict so a resumed run picks up where the prior counter left off.
+
+    Two early-exit reasons:
+
+    * ``patience_exceeded``: the smoothed val curve flattened.
+    * ``spike_detected``: the raw val curve degraded sharply
+      relative to the smoothed-best.
+
+    Per-stage tuning knobs are exposed in stage scripts; sensible
+    defaults differ between calibration (high tolerance, decoder
+    frozen → asymptotic floor) and the unfrozen stages.
+    """
+
+    enabled: bool = False
+    # N consecutive val passes with no smoothed improvement -> abort.
+    patience: int = 10
+    # Smaller smoothed delta than this counts as "no improvement".
+    min_delta: float = 0.01
+    # EMA window for the smoothed metric.
+    smooth_window: int = 5
+    # Don't start counting "no improvement" until this many vals have
+    # accumulated. Avoids premature abort from the first noisy val
+    # passes after a stage transition.
+    warmup_vals: int = 5
+    # Spike-detection: raw val_loss exceeding ``smoothed_best +
+    # spike_threshold`` for ``spike_consecutive`` vals -> abort.
+    # Catches a fast collapse the smoothed signal would otherwise mask.
+    spike_threshold: float = 0.5
+    spike_consecutive: int = 3
+
+
+@dataclass
+class EarlyStopState:
+    """Mutable state the train loop carries across val passes.
+
+    Persisted into the checkpoint's ``extra`` dict so a resume
+    restores patience counting correctly. F2 in the design notes:
+    without this, a kill+restart loses the patience counter and we
+    pay another full ``patience * val_every`` steps before aborting.
+    """
+
+    val_history: list[float] = field(default_factory=list)
+    smoothed_best: float = float("inf")
+    no_improve_counter: int = 0
+    spike_counter: int = 0
+    n_vals_seen: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "val_history": list(self.val_history),
+            "smoothed_best": self.smoothed_best,
+            "no_improve_counter": self.no_improve_counter,
+            "spike_counter": self.spike_counter,
+            "n_vals_seen": self.n_vals_seen,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> EarlyStopState:
+        if not d:
+            return cls()
+        return cls(
+            val_history=list(d.get("val_history", [])),
+            smoothed_best=float(d.get("smoothed_best", float("inf"))),
+            no_improve_counter=int(d.get("no_improve_counter", 0)),
+            spike_counter=int(d.get("spike_counter", 0)),
+            n_vals_seen=int(d.get("n_vals_seen", 0)),
+        )
+
+
+def _ema(values: list[float], window: int) -> float:
+    """Exponential moving average over the last ``window`` values."""
+    if not values:
+        return float("inf")
+    tail = values[-window:]
+    if len(tail) == 1:
+        return tail[0]
+    alpha = 2.0 / (len(tail) + 1)
+    smoothed = tail[0]
+    for v in tail[1:]:
+        smoothed = alpha * v + (1 - alpha) * smoothed
+    return smoothed
+
+
+def early_stop_decision(
+    val_loss: float,
+    state: EarlyStopState,
+    cfg: EarlyStopConfig,
+) -> tuple[bool, str | None]:
+    """Update ``state`` in place with a new val_loss; return
+    ``(should_stop, reason)``.
+
+    Reasons:
+      * ``"patience_exceeded"`` -- smoothed best didn't improve for
+        ``cfg.patience`` consecutive vals.
+      * ``"spike_detected"`` -- raw val_loss > ``smoothed_best +
+        cfg.spike_threshold`` for ``cfg.spike_consecutive`` vals.
+
+    The check is always applied AFTER ``state`` is updated, but never
+    fires before ``cfg.warmup_vals`` vals have been observed.
+    """
+    state.val_history.append(val_loss)
+    state.n_vals_seen += 1
+
+    smoothed = _ema(state.val_history, cfg.smooth_window)
+    if smoothed + cfg.min_delta < state.smoothed_best:
+        state.smoothed_best = smoothed
+        state.no_improve_counter = 0
+    else:
+        state.no_improve_counter += 1
+
+    # Spike detection on RAW (not smoothed) value.
+    if val_loss > state.smoothed_best + cfg.spike_threshold:
+        state.spike_counter += 1
+    else:
+        state.spike_counter = 0
+
+    # Don't fire during warmup. ``warmup_vals=N`` means: the first N
+    # vals never trigger abort. Abort is allowed from call N+1 onward.
+    if state.n_vals_seen <= cfg.warmup_vals:
+        return False, None
+    if state.no_improve_counter >= cfg.patience:
+        return True, "patience_exceeded"
+    if state.spike_counter >= cfg.spike_consecutive:
+        return True, "spike_detected"
+    return False, None
+
+
+@dataclass
 class CheckpointPayload:
     """Everything we need to resume a training run."""
 

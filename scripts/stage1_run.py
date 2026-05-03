@@ -44,7 +44,11 @@ from vista_ocr.models.encoder import FCNEncoderWidther  # noqa: E402
 from vista_ocr.models.vista_ocr import VistaOCR  # noqa: E402
 from vista_ocr.tokenizer.spatial_tokens import SpatialGrid  # noqa: E402
 from vista_ocr.tokenizer.tokenizer import VistaTokenizer  # noqa: E402
-from vista_ocr.training.callbacks import CheckpointConfig, ValConfig  # noqa: E402
+from vista_ocr.training.callbacks import (  # noqa: E402
+    CheckpointConfig,
+    EarlyStopConfig,
+    ValConfig,
+)
 from vista_ocr.training.train_loop import TrainConfig, train  # noqa: E402
 from vista_ocr.training.val_helpers import (  # noqa: E402
     make_val_decode_fn,
@@ -53,6 +57,20 @@ from vista_ocr.training.val_helpers import (  # noqa: E402
 )
 
 LOG = logging.getLogger("stage1")
+
+
+def _build_early_stop(args: argparse.Namespace) -> EarlyStopConfig | None:
+    """Build EarlyStopConfig from --early-stop-* CLI flags. Returns
+    None when --early-stop is not set so the train loop's check is a
+    no-op."""
+    if not getattr(args, "early_stop", False):
+        return None
+    return EarlyStopConfig(
+        enabled=True,
+        patience=args.early_stop_patience,
+        min_delta=args.early_stop_min_delta,
+        warmup_vals=args.early_stop_warmup,
+    )
 
 
 def main() -> None:
@@ -105,6 +123,17 @@ def main() -> None:
                     help="Disable encoder gradient checkpointing. Faster "
                          "per step but ~3-5x more activation memory; safe "
                          "on 48 GB+ cards.")
+    # Phase 8: early stopping (off by default; opt-in per stage).
+    ap.add_argument("--early-stop", action="store_true",
+                    help="Abort the stage when val_loss has plateaued.")
+    ap.add_argument("--early-stop-patience", type=int, default=20,
+                    help="N consecutive vals with no smoothed improvement.")
+    ap.add_argument("--early-stop-min-delta", type=float, default=0.005,
+                    help="Smoothed delta smaller than this counts as no "
+                         "improvement. Stage 1's frozen-decoder asymptote "
+                         "is shallow; default is conservative.")
+    ap.add_argument("--early-stop-warmup", type=int, default=5,
+                    help="Vals to skip before patience starts counting.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -182,6 +211,7 @@ def main() -> None:
         # B3: diagnostic decode + CER/WER. Disabled when --decode-n=0.
         val_decode_fn=make_val_decode_fn(tokenizer) if args.decode_n > 0 else None,
         val_decode_n=args.decode_n,
+        early_stop=_build_early_stop(args),
     )
 
     t0 = time.perf_counter()

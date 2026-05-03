@@ -26,6 +26,11 @@
 #   NUM_WORKERS         default 4       (raise to 8 on a fast box with
 #                                       data-pipeline-bound GPU util)
 #   PREFETCH_FACTOR     default 4       (per-worker prefetch buffer)
+#   EARLY_STOP          default 0       (1=abort each stage when val
+#                                       plateaus; per-stage patience
+#                                       and min-delta defaults differ
+#                                       per stage and live in the
+#                                       individual stageN_run.py)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -63,6 +68,15 @@ GRAD_CKPT="${GRAD_CKPT:-1}"
 # Data pipeline knobs.
 NUM_WORKERS="${NUM_WORKERS:-4}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
+# Phase 8: early stopping. EARLY_STOP=1 turns on per-stage abort when
+# val_loss has plateaued (saves wall-clock when convergence happens
+# earlier than the configured step budget).
+EARLY_STOP="${EARLY_STOP:-0}"
+
+ES_FLAGS=()
+if [[ "$EARLY_STOP" == "1" ]]; then
+  ES_FLAGS=(--early-stop)
+fi
 
 AUG_FLAG=()
 if [[ "$AUGMENT" == "1" ]]; then
@@ -101,6 +115,7 @@ echo "  sdpa             : $SDPA"
 echo "  grad_ckpt        : $GRAD_CKPT"
 echo "  num_workers      : $NUM_WORKERS"
 echo "  prefetch_factor  : $PREFETCH_FACTOR"
+echo "  early_stop       : $EARLY_STOP"
 echo
 
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="
@@ -114,7 +129,8 @@ python scripts/stage1_run.py \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
-  "${SPEED_FLAGS[@]}"
+  "${SPEED_FLAGS[@]}" \
+  "${ES_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  STAGE 2: multimodal pretraining (${STAGE2_STEPS} steps) ==="
@@ -128,7 +144,8 @@ python scripts/stage2_run.py \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
-  "${SPEED_FLAGS[@]}"
+  "${SPEED_FLAGS[@]}" \
+  "${ES_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  STAGE 3: multitask pretraining (${STAGE3_STEPS} steps) ==="
@@ -141,7 +158,8 @@ python scripts/stage3_run.py \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
-  "${SPEED_FLAGS[@]}"
+  "${SPEED_FLAGS[@]}" \
+  "${ES_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  ALL STAGES DONE ==="
