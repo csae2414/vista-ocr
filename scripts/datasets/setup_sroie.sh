@@ -7,13 +7,44 @@
 # symlinks at the target.
 #
 # Usage:
-#   ./scripts/setup_sroie.sh /home/imtit/SROIE2019           # default target
-#   ./scripts/setup_sroie.sh /path/to/SROIE2019 /custom/target
+#   ./scripts/datasets/setup_sroie.sh /home/imtit/SROIE2019            # default dst
+#   ./scripts/datasets/setup_sroie.sh /path/to/SROIE2019 /custom/dst
+#   ./scripts/datasets/setup_sroie.sh ... --emit-manifests <out-dir>
+#
+# When --emit-manifests is passed, train.jsonl + test.jsonl are
+# written under <out-dir> in the canonical manifest schema (see
+# vista_ocr.data.manifest). The same manifests feed
+# `vista-ocr finetune --train-manifest` and `vista-ocr eval --manifest`.
 
 set -euo pipefail
 
-SRC="${1:?usage: setup_sroie.sh <src-root> [<dst-root>]}"
-DST="${2:-data/raw/sroie}"
+if [[ $# -lt 1 ]]; then
+  echo "usage: setup_sroie.sh <src-root> [<dst-root>] [--emit-manifests <out-dir>]"
+  exit 2
+fi
+
+SRC="$1"; shift
+DST="data/raw/sroie"
+EMIT_OUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --emit-manifests)
+      EMIT_OUT="${2:?--emit-manifests requires an out dir}"
+      shift 2
+      ;;
+    --emit-manifests=*)
+      EMIT_OUT="${1#*=}"
+      shift
+      ;;
+    -*)
+      echo "unknown flag: $1"; exit 2
+      ;;
+    *)
+      DST="$1"; shift
+      ;;
+  esac
+done
 
 # Repo root is two levels up from this script (scripts/datasets/X.sh).
 cd "$(dirname "$0")/../.."
@@ -38,3 +69,14 @@ for split in train test; do
 done
 
 echo "DONE: $DST is ready for vista_ocr.data.sroie.iter_sroie."
+
+if [[ -n "$EMIT_OUT" ]]; then
+  mkdir -p "$EMIT_OUT"
+  for split in train test; do
+    python scripts/datasets/sroie_to_manifest.py \
+      --root "$DST" --split "$split" \
+      --out "$EMIT_OUT/$split.jsonl"
+  done
+  echo "DONE: manifests written to $EMIT_OUT/{train,test}.jsonl"
+  echo "      use with: vista-ocr finetune --train-manifest $EMIT_OUT/train.jsonl --val-manifest $EMIT_OUT/test.jsonl ..."
+fi
