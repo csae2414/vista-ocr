@@ -88,13 +88,25 @@ in configs.
 ### Fix 4 — End-to-end synth → loader → collate → Batch is tested
 
 Pre-followup, every Phase J piece had unit tests but no test
-asserted that the full path produces a valid `Batch`. Added 4
-e2e tests (`tests/test_synth_dataloader_e2e.py`) covering pure
-collate invariants, the synth-only zero-PDFA contract, the
-multi-worker pickle path (`num_workers=2` + spawn start method),
-and the `--synth-task=ocr` ablation (no spatial-token leak into
-labels, low `<unk>` rate).
+asserted that the full path produces a valid `Batch`. Added 3
+single-process e2e tests (`tests/test_synth_dataloader_e2e.py`)
+covering pure collate invariants on the actual `Batch` fields,
+the synth-only zero-PDFA contract, and the `--synth-task=ocr`
+ablation (no spatial-token leak into labels, low `<unk>` rate).
 
+- A multi-worker variant was attempted and removed: PyTorch
+  DataLoader's worker IPC relies on
+  `multiprocessing.resource_sharer.Listener` socket creation,
+  which some sandboxed envs (Claude Code's sandbox,
+  seccomp/systemd-confined CI) block with `PermissionError [Errno 1]`.
+  The error surfaces asynchronously in the worker and reaches
+  the main thread as a queue-wait deadlock, not a catchable
+  exception, so neither try/except nor a SIGALRM hard timeout
+  could turn it into a clean skip. The picklability contract is
+  covered deterministically by
+  `tests/test_synth_factory.py::test_factory_is_picklable`
+  (bare `pickle.dumps`, no DataLoader); the single-process e2e
+  path covers everything from factory through collate.
 - `make_mixed_loader` docstring now explicitly documents the
   synth-only contract (`pdfa_shards=[]` + `pdfa_weight=0.0` is
   supported and tested).
