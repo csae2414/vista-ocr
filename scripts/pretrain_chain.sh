@@ -28,20 +28,38 @@
 #   PREFETCH_FACTOR     default 4       (per-worker prefetch buffer)
 #   EARLY_STOP          default 0       (1=abort each stage when val
 #                                       plateaus; per-stage patience
-#                                       and min-delta defaults differ
-#                                       per stage and live in the
-#                                       individual stageN_run.py)
+#                                       defaults differ -- see below)
 #   COMPILE             default 0       (1=torch.compile the model;
 #                                       falls back to eager on failure)
 #   DECODE_N_BEST       default 256     (DS-fix P2: second-pass eval on
 #                                       ckpt_best candidates uses this
-#                                       many batches; 0 disables. The
-#                                       per-val log line still uses
-#                                       --decode-n=5)
-#   SELECT_ON           default val_word_f1  (DS-fix P3: ckpt_best +
-#                                       early-stop selection metric.
-#                                       Set to "val_loss" for the
-#                                       legacy lower-is-better path.)
+#                                       many batches; 0 disables)
+#
+# Per-stage selection metric + patience (chain-bug-fix-1):
+#
+#   STAGE1_SELECT_ON    default val_loss     (frozen decoder; word_f1
+#                                            is structurally 0 in stage 1
+#                                            and would trip premature
+#                                            early-stop)
+#   STAGE2_SELECT_ON    default val_word_f1
+#   STAGE3_SELECT_ON    default val_word_f1
+#   STAGE1_PATIENCE     default 40           (val_loss is bouncier than
+#                                            val_word_f1; needs more
+#                                            headroom before declaring
+#                                            plateau)
+#   STAGE2_PATIENCE     default 10
+#   STAGE3_PATIENCE     default 15           (multitask val is noisy)
+#
+#   SELECT_ON           legacy whole-chain override; if set, replaces
+#                       all three STAGE{N}_SELECT_ON values (back-compat
+#                       with pre-fix scripts).
+#
+# Inspection mode:
+#
+#   DRY_RUN             default 0       (1=print the resolved arglist
+#                                       per stage and exit 0 without
+#                                       launching training; useful to
+#                                       verify env-var wiring)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -65,41 +83,43 @@ AUGMENT="${AUGMENT:-1}"
 STAGE1_STEPS="${STAGE1_STEPS:-20000}"
 STAGE2_STEPS="${STAGE2_STEPS:-80000}"
 STAGE3_STEPS="${STAGE3_STEPS:-70000}"
-# Page resolution: forwarded to all three stage scripts via --page-preset.
-# Defaults to 'medium' (1100x850, fits 24 GB 3090). On a 48 GB+ box,
-# set PAGE_PRESET=large for 1400x1050 to feed more pixels per glyph.
-# Use 'auto' to let the helper pick from CUDA VRAM.
 PAGE_PRESET="${PAGE_PRESET:-medium}"
-# Speed knobs (defaults preserve back-compat with the 3090 baseline).
-# SDPA: enable the C3 monkey-patch; ship-gate fires before training.
-# GRAD_CKPT: 1=on (3090 default), 0=off (saves ~30-50% encoder time
-# on 48 GB+ cards at the cost of activation memory).
 SDPA="${SDPA:-0}"
 GRAD_CKPT="${GRAD_CKPT:-1}"
-# Data pipeline knobs.
 NUM_WORKERS="${NUM_WORKERS:-4}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
-# Phase 8: early stopping. EARLY_STOP=1 turns on per-stage abort when
-# val_loss has plateaued (saves wall-clock when convergence happens
-# earlier than the configured step budget).
 EARLY_STOP="${EARLY_STOP:-0}"
-# torch.compile (Phase 6). Off by default. Enable for Run C.
 COMPILE="${COMPILE:-0}"
-# DS-fix P2: ckpt_best candidate second-pass eval. 256 batches is a
-# reasonable default (per-val cost stays at decode_n=5; second pass
-# fires only on val_loss improvement, which is rare).
 DECODE_N_BEST="${DECODE_N_BEST:-256}"
-# DS-fix P3: ckpt_best + early-stop selection metric. word-F1 is
-# higher-is-better and what BENCHMARKS rows compare; val_loss is the
-# legacy fallback for old configs.
-SELECT_ON="${SELECT_ON:-val_word_f1}"
+
+# Per-stage selection metric. Stage 1 has frozen decoder -> val_word_f1
+# is structurally 0 and would trip premature early-stop. val_loss is
+# the only metric that moves in stage 1.
+STAGE1_SELECT_ON="${STAGE1_SELECT_ON:-val_loss}"
+STAGE2_SELECT_ON="${STAGE2_SELECT_ON:-val_word_f1}"
+STAGE3_SELECT_ON="${STAGE3_SELECT_ON:-val_word_f1}"
+
+# Per-stage early-stop patience. Empirically: Run A stage-1 val_loss
+# bounced ~0.05 nat with ~3-val period; patience 40 gives ~12 cycles
+# of headroom before declaring plateau. Stages 2-3 watch val_word_f1
+# which climbs smoothly when the decoder is unfrozen, so 10/15 is
+# plenty.
+STAGE1_PATIENCE="${STAGE1_PATIENCE:-40}"
+STAGE2_PATIENCE="${STAGE2_PATIENCE:-10}"
+STAGE3_PATIENCE="${STAGE3_PATIENCE:-15}"
+
+# Legacy whole-chain override.
+if [[ -n "${SELECT_ON:-}" ]]; then
+  STAGE1_SELECT_ON="$SELECT_ON"
+  STAGE2_SELECT_ON="$SELECT_ON"
+  STAGE3_SELECT_ON="$SELECT_ON"
+fi
+
+DRY_RUN="${DRY_RUN:-0}"
 
 ES_FLAGS=()
 if [[ "$EARLY_STOP" == "1" ]]; then
   ES_FLAGS=(--early-stop)
-fi
-if [[ "$COMPILE" == "1" ]]; then
-  SPEED_FLAGS+=(--compile)
 fi
 
 AUG_FLAG=()
@@ -113,13 +133,13 @@ fi
 if [[ "$GRAD_CKPT" == "0" ]]; then
   SPEED_FLAGS+=(--no-grad-ckpt)
 fi
+if [[ "$COMPILE" == "1" ]]; then
+  SPEED_FLAGS+=(--compile)
+fi
 
 # Locked PDFA split (see src/vista_ocr/data/split.py):
 #   shard 0118 = val  (used for ckpt_best selection)
 #   shard 0119 = test (touched only by scripts/eval_run.sh)
-# Both are excluded from --train-shards so ckpt_best selection cannot
-# leak into the test set, and dynamic shard counts cannot silently
-# shift which shard is val.
 VAL_BASE="pdfa-eng-train-0118.tar"
 TEST_BASE="pdfa-eng-train-0119.tar"
 VAL="data/raw/pdfa/${VAL_BASE}"
@@ -147,6 +167,41 @@ SPM=data/processed/vocab/sp_en_16k.model
 
 mkdir -p logs checkpoints
 
+# Auto-cap each stage's --steps when EARLY_STOP=1 would fire first.
+# Effective cap = val_every * (warmup_vals + STAGE_N_PATIENCE). The
+# warmup_vals default in stage{1,2,3}_run.py is 5; val_every is
+# 500 / 2000 / 2000 respectively. If the configured STAGE_N_STEPS
+# exceeds the cap, the chain caps it explicitly so the running
+# budget is observable in the log (rather than silently truncated
+# by the early-stop check inside train()).
+WARMUP_VALS=5
+if [[ "$EARLY_STOP" == "1" ]]; then
+  s1_cap=$((500 * (WARMUP_VALS + STAGE1_PATIENCE)))
+  s2_cap=$((2000 * (WARMUP_VALS + STAGE2_PATIENCE)))
+  s3_cap=$((2000 * (WARMUP_VALS + STAGE3_PATIENCE)))
+  if (( STAGE1_STEPS > s1_cap )); then
+    echo "AUTO-CAP: STAGE1_STEPS=$STAGE1_STEPS exceeds early-stop cap $s1_cap (val_every=500 * (warmup=$WARMUP_VALS + patience=$STAGE1_PATIENCE)); capping."
+    STAGE1_STEPS=$s1_cap
+  fi
+  if (( STAGE2_STEPS > s2_cap )); then
+    echo "AUTO-CAP: STAGE2_STEPS=$STAGE2_STEPS exceeds early-stop cap $s2_cap; capping."
+    STAGE2_STEPS=$s2_cap
+  fi
+  if (( STAGE3_STEPS > s3_cap )); then
+    echo "AUTO-CAP: STAGE3_STEPS=$STAGE3_STEPS exceeds early-stop cap $s3_cap; capping."
+    STAGE3_STEPS=$s3_cap
+  fi
+fi
+
+# Stage 2 inits from stage 1's last-step state, not val-loss-best.
+# Stage 1's val_loss bounces; ckpt_best.pt can be from an early
+# transient minimum that doesn't reflect the encoder's final
+# calibration. ckpt_final.pt (written via save_final=True, default
+# since DS-fix Phase 3) captures the last-step state. Fall back to
+# ckpt_best.pt for legacy chains where save_final wasn't enabled.
+STAGE1_INIT_CKPT_DEFAULT="checkpoints/stage1/ckpt_final.pt"
+STAGE1_INIT_CKPT_FALLBACK="checkpoints/stage1/ckpt_best.pt"
+
 echo "=== $(date -Is)  data ==="
 echo "  train shards     : ${#TRAIN_SHARDS[@]}"
 echo "  val shard        : $VAL"
@@ -163,10 +218,25 @@ echo "  num_workers      : $NUM_WORKERS"
 echo "  prefetch_factor  : $PREFETCH_FACTOR"
 echo "  early_stop       : $EARLY_STOP"
 echo "  compile          : $COMPILE"
+echo "  stage select_on  : 1=$STAGE1_SELECT_ON 2=$STAGE2_SELECT_ON 3=$STAGE3_SELECT_ON"
+echo "  stage patience   : 1=$STAGE1_PATIENCE 2=$STAGE2_PATIENCE 3=$STAGE3_PATIENCE"
 echo
 
+# DRY_RUN: print resolved arglist per stage and exit cleanly without
+# launching training. Useful for tests + operators verifying their
+# env-var wiring before committing to a multi-day run.
+_print_or_run() {
+  local stage_name="$1"; shift
+  local cmd=("$@")
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "DRY_RUN [$stage_name]: ${cmd[*]}"
+  else
+    "${cmd[@]}"
+  fi
+}
+
 echo "=== $(date -Is)  STAGE 1: calibration (frozen decoder, ${STAGE1_STEPS} steps) ==="
-python scripts/stage1_run.py \
+_print_or_run stage1 python scripts/stage1_run.py \
   --train-shards "${TRAIN_SHARDS[@]}" \
   --val-shard "$VAL" --spm "$SPM" \
   --out checkpoints/stage1 \
@@ -174,23 +244,34 @@ python scripts/stage1_run.py \
   --init-decoder-from "$INIT_DECODER_FROM" \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
-  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$STAGE1_SELECT_ON" \
+  --early-stop-patience "$STAGE1_PATIENCE" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
   "${ES_FLAGS[@]}"
 
+# Stage 2 init source: prefer ckpt_final.pt; fall back to ckpt_best.pt.
+# The fallback decision lands here (after stage 1 has run) so that the
+# operator sees the file-not-found warning at the moment it matters.
+STAGE1_INIT_CKPT="$STAGE1_INIT_CKPT_DEFAULT"
+if [[ "$DRY_RUN" != "1" && ! -f "$STAGE1_INIT_CKPT_DEFAULT" ]]; then
+  echo "WARN: $STAGE1_INIT_CKPT_DEFAULT missing; falling back to $STAGE1_INIT_CKPT_FALLBACK"
+  STAGE1_INIT_CKPT="$STAGE1_INIT_CKPT_FALLBACK"
+fi
+
 echo
 echo "=== $(date -Is)  STAGE 2: multimodal pretraining (${STAGE2_STEPS} steps) ==="
-python scripts/stage2_run.py \
+_print_or_run stage2 python scripts/stage2_run.py \
   --train-shards "${TRAIN_SHARDS[@]}" \
   --val-shard "$VAL" --spm "$SPM" \
   --out checkpoints/stage2 \
-  --init-from checkpoints/stage1/ckpt_best.pt \
+  --init-from "$STAGE1_INIT_CKPT" \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
-  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$STAGE2_SELECT_ON" \
+  --early-stop-patience "$STAGE2_PATIENCE" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
@@ -198,14 +279,15 @@ python scripts/stage2_run.py \
 
 echo
 echo "=== $(date -Is)  STAGE 3: multitask pretraining (${STAGE3_STEPS} steps) ==="
-python scripts/stage3_run.py \
+_print_or_run stage3 python scripts/stage3_run.py \
   --train-shards "${TRAIN_SHARDS[@]}" \
   --val-shard "$VAL" --spm "$SPM" \
   --out checkpoints/stage3 \
   --init-from checkpoints/stage2/ckpt_best.pt \
   --steps "$STAGE3_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
-  --decode-n-best "$DECODE_N_BEST" --select-on "$SELECT_ON" \
+  --decode-n-best "$DECODE_N_BEST" --select-on "$STAGE3_SELECT_ON" \
+  --early-stop-patience "$STAGE3_PATIENCE" \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \

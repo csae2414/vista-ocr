@@ -4,6 +4,80 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-04 — pretrain chain: per-stage select_on + patience + auto-cap
+
+### Symptom
+
+Run C stage 1 hit `EARLY_STOP: reason=patience_exceeded` at step
+**10501 / 20000**. Stage 1 has a frozen decoder, so its decoded
+output is structurally EOS-only and `val_word_f1` is permanently 0.
+The chain forwarded a single `SELECT_ON=val_word_f1` to all three
+stages; stage 1 saw "metric never moves" and interpreted it as
+"plateau" after the (warmup_vals + patience) val window expired.
+
+### Diagnosis
+
+`scripts/pretrain_chain.sh` had a single `SELECT_ON` env var
+forwarded to every stage. The stages have structurally different
+metrics:
+
+* Stage 1 (frozen decoder): only `val_loss` moves; `val_word_f1`
+  is permanently 0.
+* Stages 2-3 (decoder unfrozen): `val_word_f1` is the
+  paper-relatable signal; `val_loss` can be misleading
+  (DS-fix Phase 3 reasoning).
+
+Plus three adjacent issues this bug surfaced:
+
+* Stage 1's val_loss is bouncier than stages 2-3's word_f1, so the
+  early-stop patience that's appropriate for stages 2-3 (10-15) is
+  too aggressive for stage 1's signal.
+* Stage 2 inits from stage 1's `ckpt_best.pt` -- which is val-loss-
+  best, possibly an early transient minimum, not the fully-
+  calibrated encoder. Stage 1's `ckpt_final.pt` is what we want.
+* When `EARLY_STOP=1` is on, an operator setting `STAGE1_STEPS=N`
+  has no way to know that early-stop will fire well before step N.
+  Silent budget truncation surfaces only when the operator looks
+  for the DONE log line and sees an unexpected step count.
+
+### Fix
+
+Per-stage configuration in `pretrain_chain.sh`:
+
+| Setting | Stage 1 | Stages 2/3 | Why |
+|---|---|---|---|
+| `STAGE{N}_SELECT_ON` | val_loss | val_word_f1 | structurally |
+| `STAGE{N}_PATIENCE` | 40 | 10 / 15 | val_loss is bouncier |
+| Init source for next stage | ckpt_final.pt | ckpt_best.pt | last-step state |
+
+Plus:
+
+* **Auto-cap**: when `EARLY_STOP=1` is on and `STAGE_N_STEPS` exceeds
+  the early-stop cap, the chain caps the value explicitly with an
+  `AUTO-CAP:` log line, so the running budget is observable rather
+  than silently truncated.
+* **Fallback**: if `ckpt_final.pt` is missing (legacy chain run
+  before save_final=True default), stage 2 falls back to
+  `ckpt_best.pt` with a `WARN:` log line.
+* **DRY_RUN=1 mode**: prints the resolved arglist per stage and
+  exits 0 without launching training. Operators can verify env-var
+  wiring before committing to a multi-day run.
+* **Legacy `SELECT_ON` env var** still works as a whole-chain
+  override (back-compat with pre-fix scripts).
+
+6 tests in `tests/test_pretrain_chain_smoke.py`: 3 static-text
+contracts (per-stage `--select-on`, defaults pinned, AUTO-CAP block
+present) + 3 runtime DRY_RUN tests (each stage's arglist has the
+right flags; legacy SELECT_ON propagates; AUTO-CAP fires when
+appropriate).
+
+### Operational note
+
+This fix lands while Run C is mid-stage-2 on the L40S. **Do not
+pull the fix on the L40S until Run C completes.** The supervisor
+wrapper would otherwise resume on different config if the chain
+ever restarted.
+
 ## 2026-05-03 — `vista-ocr eval` paper-relatable metric blocks
 
 `vista-ocr eval --manifest` now produces text-detection metrics

@@ -31,6 +31,25 @@ python scripts/download_idl.py --num-shards 12
 `setup_data.sh` also runs `bootstrap_tokenizer.py` to produce the
 default SPM model at `data/processed/vocab/sp_en_16k.model`.
 
+### Per-stage early-stop config
+
+`pretrain_chain.sh` configures `--select-on` and
+`--early-stop-patience` per stage; stage 1 differs from stages 2-3
+because its frozen decoder makes `val_word_f1` structurally 0:
+
+| Setting | Stage 1 | Stages 2/3 |
+|---|---|---|
+| `STAGE{N}_SELECT_ON` | `val_loss` | `val_word_f1` |
+| `STAGE{N}_PATIENCE` | 40 | 10 / 15 |
+
+Override per-stage with `STAGE1_SELECT_ON=...` etc. Override
+whole-chain with `SELECT_ON=...` (back-compat).
+
+When `EARLY_STOP=1`, `STAGE_N_STEPS` is auto-capped if early-stop
+would fire before the configured budget; an `AUTO-CAP:` log line
+surfaces the change. Run with `DRY_RUN=1` to see the resolved
+arglist per stage without launching training.
+
 ## 3. Pretraining chain
 
 ```bash

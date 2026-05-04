@@ -7,7 +7,7 @@
 
 A from-scratch PyTorch reimplementation of **VISTA-OCR** (Hamdi, Tamasna,
 Boisson, Paquet — *VISTA-OCR: Towards generative and interactive end to
-end OCR models*, [arXiv:2504.03621](https://arxiv.org/abs/2504.03621),
+end OCR models*, [arXiv:2504.03621](https://arxiv.org/html/2504.03621v1),
 April 2025).
 
 No official code has been released by the authors. This repository follows
@@ -375,7 +375,7 @@ ablation scripts under `scripts/`.
 
 ## References
 
-- VISTA-OCR paper: [arXiv:2504.03621](https://arxiv.org/abs/2504.03621)
+- VISTA-OCR paper: [arXiv:2504.03621](https://arxiv.org/html/2504.03621v1)
   (Hamdi et al., 2025)
 - DANIEL encoder reference: Constum, Tranouez, Paquet, *DANIEL: A Fast
   Document Attention Network…*, IJDAR 2025,
