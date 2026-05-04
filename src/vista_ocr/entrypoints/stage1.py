@@ -35,7 +35,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     ap.add_argument("--page-w", type=int, default=None,
                     help="Page canvas width in px. Overrides --page-preset.")
     ap.add_argument("--page-preset", default="medium",
-                    choices=("tiny", "small", "medium", "large", "auto"),
+                    choices=("tiny", "small", "medium", "large", "paper", "auto"),
                     help="Page resolution preset (default medium = 1100x850, "
                          "fits a 24 GB 3090). 'auto' queries CUDA VRAM. "
                          "Ignored when --page-h/--page-w are set explicitly.")

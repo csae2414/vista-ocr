@@ -14,7 +14,20 @@ def test_preset_for_vram_thresholds():
     assert R.preset_for_vram(20) == "medium"   # exactly the 3090's 24GB tier
     assert R.preset_for_vram(24) == "medium"
     assert R.preset_for_vram(40) == "large"
-    assert R.preset_for_vram(80) == "large"
+    assert R.preset_for_vram(46) == "large"    # L40S (46 GB)
+    # Phase H: paper preset behind 78 GB threshold (A100-80GB at 79.4
+    # GB qualifies; H100 80 GB SXM also qualifies).
+    assert R.preset_for_vram(77) == "large"
+    assert R.preset_for_vram(78) == "paper"
+    assert R.preset_for_vram(80) == "paper"
+
+
+def test_paper_preset_dimensions_match_paper_appendix():
+    """Phase H: the paper preset is the median resize from paper §A:
+    height ~= 2200, width ~= 1700."""
+    paper = R.PRESETS["paper"]
+    assert paper.height == 2200
+    assert paper.width == 1700
 
 
 def test_preset_for_vram_below_floor_is_tiny():

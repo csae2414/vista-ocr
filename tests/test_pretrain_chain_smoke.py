@@ -117,6 +117,13 @@ def _setup_fake_repo_for_dry_run(tmp: Path) -> Path:
         (tmp / "data/raw/pdfa" / shard).write_bytes(b"")
     (tmp / "data/processed/vocab/sp_en_16k.model").write_bytes(b"")
 
+    # Phase H: optional IDL shard fixtures, only created when the test
+    # asks for the pdfa+idl mix. Tests that don't need them just pass
+    # DATA_MIX=pdfa (the default).
+    (tmp / "data/raw/idl").mkdir(parents=True)
+    for shard in ("idl-train-0001.tar", "idl-train-0002.tar"):
+        (tmp / "data/raw/idl" / shard).write_bytes(b"")
+
     shutil.copy(CHAIN_SH, tmp / "scripts/pretrain_chain.sh")
     os.chmod(tmp / "scripts/pretrain_chain.sh", 0o755)
     return tmp
@@ -199,3 +206,81 @@ def test_chain_dry_run_auto_cap_fires_when_steps_exceeds_cap():
     # The arglist should have --steps 22500 (the cap), not 99999.
     assert "--steps 22500" in s1_match.group(1)
     assert "--steps 99999" not in s1_match.group(1)
+
+
+# ---------- Phase H: DATA_MIX + paper preset --------------------------
+
+
+def test_phase_h_default_data_mix_is_pdfa_only():
+    """Default DATA_MIX=pdfa keeps the legacy invocation: stages 2+3
+    do NOT receive --idl-shards."""
+    out = _run_dry({"DATA_MIX": "pdfa"})
+    for stage in ("stage1", "stage2", "stage3"):
+        m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+        assert m
+        assert "--idl-shards" not in m.group(1), (
+            f"{stage}: DATA_MIX=pdfa leaked --idl-shards"
+        )
+
+
+def test_phase_h_pdfa_plus_idl_propagates_to_stages_2_and_3_only():
+    """DATA_MIX=pdfa+idl: stage 1 stays PDFA-only (frozen decoder
+    calibration); stages 2+3 get --idl-shards."""
+    out = _run_dry({"DATA_MIX": "pdfa+idl"})
+
+    s1 = re.search(r"^DRY_RUN \[stage1\]: (.+)$", out, re.MULTILINE)
+    assert s1
+    assert "--idl-shards" not in s1.group(1), (
+        "stage 1 must not receive --idl-shards (frozen decoder calibration "
+        "is PDFA-only by design; mix would add noise without benefit)"
+    )
+
+    for stage in ("stage2", "stage3"):
+        m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+        assert m, f"{stage} arglist missing"
+        assert "--idl-shards" in m.group(1), (
+            f"{stage}: DATA_MIX=pdfa+idl didn't propagate --idl-shards"
+        )
+        # Two IDL fixture shards in the test environment.
+        assert "idl-train-0001.tar" in m.group(1)
+        assert "idl-train-0002.tar" in m.group(1)
+        # Default IDL_WEIGHT=0.6 (paper-comparable; majority real).
+        assert "--idl-weight 0.6" in m.group(1)
+
+
+def test_phase_h_unknown_data_mix_rejected():
+    """An unknown DATA_MIX value (typo) must hard-fail rather than
+    silently fall back to a default."""
+    out = _run_dry({"DATA_MIX": "pdfa+iddl"})    # typo
+    assert "Unknown DATA_MIX=" in out
+
+
+def test_phase_h_paper_preset_propagates():
+    """PAGE_PRESET=paper: each stage gets --page-preset paper. The
+    stage scripts will resolve to (2200, 1700) at run time; the chain
+    just forwards the preset name."""
+    out = _run_dry({"PAGE_PRESET": "paper"})
+    for stage in ("stage1", "stage2", "stage3"):
+        m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+        assert m
+        assert "--page-preset paper" in m.group(1)
+
+
+def test_phase_h_idl_weight_override():
+    """IDL_WEIGHT can be overridden from the chain (e.g. for an
+    ablation comparing 0.6 vs 0.7)."""
+    out = _run_dry({"DATA_MIX": "pdfa+idl", "IDL_WEIGHT": "0.7"})
+    s2 = re.search(r"^DRY_RUN \[stage2\]: (.+)$", out, re.MULTILINE)
+    assert s2
+    assert "--idl-weight 0.7" in s2.group(1)
+
+
+def test_phase_h_missing_idl_shards_fails_loudly():
+    """When DATA_MIX=pdfa+idl is set but no IDL shards match the glob,
+    chain exits with a clear error rather than silently running a
+    PDFA-only training that the operator thought was pdfa+idl."""
+    out = _run_dry({
+        "DATA_MIX": "pdfa+idl",
+        "IDL_SHARDS_GLOB": "data/raw/idl/idl-doesnotexist-*.tar",
+    })
+    assert "no IDL shards matched" in out

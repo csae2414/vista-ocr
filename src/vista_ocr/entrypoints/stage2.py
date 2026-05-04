@@ -17,6 +17,9 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         add_help=add_help,
     )
     ap.add_argument("--train-shards", nargs="+", required=True, type=Path)
+    ap.add_argument("--idl-shards", nargs="+", type=Path, default=None,
+                    help="Phase H: mix IDL into the train stream.")
+    ap.add_argument("--idl-weight", type=float, default=0.6)
     ap.add_argument("--val-shard", required=True, type=Path)
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -26,7 +29,7 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     ap.add_argument("--page-h", type=int, default=None)
     ap.add_argument("--page-w", type=int, default=None)
     ap.add_argument("--page-preset", default="medium",
-                    choices=("tiny", "small", "medium", "large", "auto"))
+                    choices=("tiny", "small", "medium", "large", "paper", "auto"))
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--prefetch-factor", type=int, default=4)
     ap.add_argument("--val-every", type=int, default=2000)
@@ -63,7 +66,11 @@ def run(args: argparse.Namespace) -> int:
     import torch
 
     from vista_ocr.data.augment import AugmentConfig
-    from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader
+    from vista_ocr.data.dataloader import (
+        DataLoaderConfig,
+        make_mixed_pdfa_idl_loader,
+        make_pdfa_dataloader,
+    )
     from vista_ocr.data.preprocess import PreprocessConfig
     from vista_ocr.data.split import assert_not_test_shard
     from vista_ocr.logging_config import setup_logging
@@ -131,14 +138,25 @@ def run(args: argparse.Namespace) -> int:
     if aug_cfg is not None:
         LOG.info("B2: train-time augmentation enabled")
 
-    train_loader = make_pdfa_dataloader(
-        shards=[str(p) for p in args.train_shards],
-        tokenizer=tokenizer, pre_cfg=pre_cfg,
-        dl_cfg=DataLoaderConfig(
-            micro_batch_size=1, num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
-        ),
+    dl_cfg = DataLoaderConfig(
+        micro_batch_size=1, num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
+    if args.idl_shards:
+        idl_w = args.idl_weight
+        pdfa_w = 1.0 - idl_w
+        LOG.info("Phase H: PDFA+IDL mix (%.2f / %.2f)", pdfa_w, idl_w)
+        train_loader = make_mixed_pdfa_idl_loader(
+            pdfa_shards=[str(p) for p in args.train_shards],
+            idl_shards=[str(p) for p in args.idl_shards],
+            tokenizer=tokenizer, pre_cfg=pre_cfg, dl_cfg=dl_cfg,
+            pdfa_weight=pdfa_w, idl_weight=idl_w,
+        )
+    else:
+        train_loader = make_pdfa_dataloader(
+            shards=[str(p) for p in args.train_shards],
+            tokenizer=tokenizer, pre_cfg=pre_cfg, dl_cfg=dl_cfg,
+        )
     spatial_ids = tokenizer._spatial_ids
 
     def val_batches_factory():

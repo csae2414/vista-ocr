@@ -27,7 +27,11 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 import torch  # noqa: E402
 
 from vista_ocr.data.augment import AugmentConfig  # noqa: E402
-from vista_ocr.data.dataloader import DataLoaderConfig, make_pdfa_dataloader  # noqa: E402
+from vista_ocr.data.dataloader import (  # noqa: E402
+    DataLoaderConfig,
+    make_mixed_pdfa_idl_loader,
+    make_pdfa_dataloader,
+)
 from vista_ocr.data.preprocess import PreprocessConfig  # noqa: E402
 from vista_ocr.data.split import assert_not_test_shard  # noqa: E402
 from vista_ocr.logging_config import setup_logging  # noqa: E402
@@ -54,7 +58,17 @@ LOG = logging.getLogger("stage2")
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train-shards", nargs="+", required=True, type=Path)
+    ap.add_argument("--train-shards", nargs="+", required=True, type=Path,
+                    help="PDFA train shards (paths to .tar files).")
+    ap.add_argument("--idl-shards", nargs="+", type=Path, default=None,
+                    help="Phase H: when set, switch the train stream to the "
+                         "PDFA+IDL weighted mix (make_mixed_pdfa_idl_loader). "
+                         "Default 60%% IDL / 40%% PDFA, paper-comparable (paper "
+                         "Section 3.5: ~120K synth + ~170K real).")
+    ap.add_argument("--idl-weight", type=float, default=0.6,
+                    help="Phase H: weight for IDL in the mix (default 0.6); "
+                         "PDFA gets the remainder. Only meaningful with "
+                         "--idl-shards.")
     ap.add_argument("--val-shard", required=True, type=Path)
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -66,7 +80,7 @@ def main() -> None:
     ap.add_argument("--page-w", type=int, default=None,
                     help="Page canvas width in px. Overrides --page-preset.")
     ap.add_argument("--page-preset", default="medium",
-                    choices=("tiny", "small", "medium", "large", "auto"),
+                    choices=("tiny", "small", "medium", "large", "paper", "auto"),
                     help="Page resolution preset. 'auto' queries CUDA VRAM. "
                          "Default 'medium' = 1100x850 (24 GB 3090).")
     ap.add_argument("--num-workers", type=int, default=4)
@@ -153,14 +167,33 @@ def main() -> None:
     )
     if aug_cfg is not None:
         LOG.info("B2: train-time augmentation enabled")
-    train_loader = make_pdfa_dataloader(
-        shards=[str(p) for p in args.train_shards],
-        tokenizer=tokenizer, pre_cfg=pre_cfg,
-        dl_cfg=DataLoaderConfig(
-            micro_batch_size=1, num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
-        ),
+    dl_cfg = DataLoaderConfig(
+        micro_batch_size=1, num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
+    if args.idl_shards:
+        # Phase H: paper-comparable PDFA+IDL mix (60% IDL / 40% PDFA
+        # default; paper Section 3.5 reports ~120K synth PDFA + ~170K
+        # real IDL, mapping roughly to 41/59 PDFA/IDL).
+        idl_weight = args.idl_weight
+        pdfa_weight = 1.0 - idl_weight
+        LOG.info(
+            "Phase H: PDFA+IDL mixed train stream (%.2f PDFA / %.2f IDL); "
+            "PDFA shards=%d, IDL shards=%d",
+            pdfa_weight, idl_weight,
+            len(args.train_shards), len(args.idl_shards),
+        )
+        train_loader = make_mixed_pdfa_idl_loader(
+            pdfa_shards=[str(p) for p in args.train_shards],
+            idl_shards=[str(p) for p in args.idl_shards],
+            tokenizer=tokenizer, pre_cfg=pre_cfg, dl_cfg=dl_cfg,
+            pdfa_weight=pdfa_weight, idl_weight=idl_weight,
+        )
+    else:
+        train_loader = make_pdfa_dataloader(
+            shards=[str(p) for p in args.train_shards],
+            tokenizer=tokenizer, pre_cfg=pre_cfg, dl_cfg=dl_cfg,
+        )
     spatial_ids = tokenizer._spatial_ids
 
     def val_batches_factory():

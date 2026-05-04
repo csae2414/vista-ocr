@@ -53,7 +53,13 @@ LOG = logging.getLogger("stage3")
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train-shards", nargs="+", required=True, type=Path)
+    ap.add_argument("--train-shards", nargs="+", required=True, type=Path,
+                    help="PDFA train shards (paths to .tar files).")
+    ap.add_argument("--idl-shards", nargs="+", type=Path, default=None,
+                    help="Phase H: when set, mix IDL into stage 3's "
+                         "task-relabelled stream alongside PDFA.")
+    ap.add_argument("--idl-weight", type=float, default=0.6,
+                    help="Phase H: IDL fraction of the stage-3 mix.")
     ap.add_argument("--val-shard", required=True, type=Path)
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -65,7 +71,7 @@ def main() -> None:
     ap.add_argument("--page-w", type=int, default=None,
                     help="Page canvas width in px. Overrides --page-preset.")
     ap.add_argument("--page-preset", default="medium",
-                    choices=("tiny", "small", "medium", "large", "auto"),
+                    choices=("tiny", "small", "medium", "large", "paper", "auto"),
                     help="Page resolution preset. 'auto' queries CUDA VRAM. "
                          "Default 'medium' = 1100x850 (24 GB 3090).")
     ap.add_argument("--val-every", type=int, default=2000)
@@ -172,13 +178,40 @@ def main() -> None:
     mix = TaskMix(weights=weights)
 
     # Multitask relabelling needs the raw Sample, so we stream in-process.
+    # Phase H: when --idl-shards is set, mix PDFA + IDL at the Sample
+    # layer (before MixedTaskStream relabelling) via MixedStream.
     def stage3_stream():
-        for shard in args.train_shards:
-            cfg_p = PdfaConfig(shards=[str(shard)])
-            base = iter_pdfa(cfg_p)
-            relabelled = MixedTaskStream(base, mix, seed=0)
-            for sample in relabelled:
-                yield collate([sample], tokenizer, pre_cfg)
+        from vista_ocr.data.idl import IdlConfig, iter_idl
+        from vista_ocr.data.mixture_stream import MixedStream, MixedStreamSource
+
+        def _pdfa_samples():
+            for shard in args.train_shards:
+                yield from iter_pdfa(PdfaConfig(shards=[str(shard)]))
+
+        if args.idl_shards:
+            def _idl_samples():
+                for shard in args.idl_shards:
+                    yield from iter_idl(IdlConfig(shards=[str(shard)]))
+
+            idl_w = args.idl_weight
+            pdfa_w = 1.0 - idl_w
+            LOG.info(
+                "Phase H: stage-3 PDFA+IDL mix (%.2f / %.2f); "
+                "PDFA shards=%d, IDL shards=%d",
+                pdfa_w, idl_w, len(args.train_shards), len(args.idl_shards),
+            )
+            base = MixedStream(
+                sources=[
+                    MixedStreamSource(name="pdfa", stream=_pdfa_samples(), weight=pdfa_w),
+                    MixedStreamSource(name="idl",  stream=_idl_samples(),  weight=idl_w),
+                ],
+                seed=0,
+            )
+        else:
+            base = _pdfa_samples()
+        relabelled = MixedTaskStream(base, mix, seed=0)
+        for sample in relabelled:
+            yield collate([sample], tokenizer, pre_cfg)
 
     spatial_ids = tokenizer._spatial_ids
 

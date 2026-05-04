@@ -81,7 +81,7 @@ def main() -> None:
     ap.add_argument("--page-h", type=int, default=None)
     ap.add_argument("--page-w", type=int, default=None)
     ap.add_argument("--page-preset", default="medium",
-                    choices=("tiny", "small", "medium", "large", "auto"))
+                    choices=("tiny", "small", "medium", "large", "paper", "auto"))
     ap.add_argument("--val-every", type=int, default=250)
     ap.add_argument("--val-batches", type=int, default=50)
     ap.add_argument("--ckpt-every", type=int, default=250)

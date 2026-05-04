@@ -54,6 +54,14 @@
 #                       all three STAGE{N}_SELECT_ON values (back-compat
 #                       with pre-fix scripts).
 #
+# Phase H -- training-data mixture (stages 2+3 only):
+#
+#   DATA_MIX            default pdfa   (or 'pdfa+idl' for paper-faithful
+#                                      mix; stage 1 is always PDFA-only)
+#   IDL_SHARDS_GLOB     default data/raw/idl/idl-train-*.tar
+#   IDL_WEIGHT          default 0.6    (paper Section 3.5 ratio leans
+#                                      toward real data)
+#
 # Inspection mode:
 #
 #   DRY_RUN             default 0       (1=print the resolved arglist
@@ -116,6 +124,26 @@ if [[ -n "${SELECT_ON:-}" ]]; then
 fi
 
 DRY_RUN="${DRY_RUN:-0}"
+
+# Phase H: training-data mixture. Stage 1 always PDFA-only (frozen
+# decoder calibration; mix adds noise that doesn't help). Stages 2+3
+# can mix in IDL when DATA_MIX=pdfa+idl. Default IDL fraction 0.6,
+# paper-comparable (paper Section 3.5: ~120K synth + ~170K real).
+DATA_MIX="${DATA_MIX:-pdfa}"
+IDL_SHARDS_GLOB="${IDL_SHARDS_GLOB:-data/raw/idl/idl-train-*.tar}"
+IDL_WEIGHT="${IDL_WEIGHT:-0.6}"
+IDL_FLAGS=()
+if [[ "$DATA_MIX" == "pdfa+idl" ]]; then
+  mapfile -t IDL_SHARDS < <(ls -1 ${IDL_SHARDS_GLOB} 2>/dev/null | sort)
+  if [[ ${#IDL_SHARDS[@]} -lt 1 ]]; then
+    echo "DATA_MIX=pdfa+idl but no IDL shards matched IDL_SHARDS_GLOB=${IDL_SHARDS_GLOB}"
+    exit 1
+  fi
+  IDL_FLAGS=(--idl-shards "${IDL_SHARDS[@]}" --idl-weight "$IDL_WEIGHT")
+elif [[ "$DATA_MIX" != "pdfa" ]]; then
+  echo "Unknown DATA_MIX=$DATA_MIX; expected 'pdfa' or 'pdfa+idl'."
+  exit 1
+fi
 
 ES_FLAGS=()
 if [[ "$EARLY_STOP" == "1" ]]; then
@@ -220,6 +248,10 @@ echo "  early_stop       : $EARLY_STOP"
 echo "  compile          : $COMPILE"
 echo "  stage select_on  : 1=$STAGE1_SELECT_ON 2=$STAGE2_SELECT_ON 3=$STAGE3_SELECT_ON"
 echo "  stage patience   : 1=$STAGE1_PATIENCE 2=$STAGE2_PATIENCE 3=$STAGE3_PATIENCE"
+echo "  data mix         : $DATA_MIX (stages 2+3; stage 1 is PDFA-only)"
+if [[ "$DATA_MIX" == "pdfa+idl" ]]; then
+  echo "  idl shards       : ${#IDL_SHARDS[@]} (weight $IDL_WEIGHT)"
+fi
 echo
 
 # DRY_RUN: print resolved arglist per stage and exit cleanly without
@@ -275,7 +307,8 @@ _print_or_run stage2 python scripts/stage2_run.py \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
-  "${ES_FLAGS[@]}"
+  "${ES_FLAGS[@]}" \
+  "${IDL_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  STAGE 3: multitask pretraining (${STAGE3_STEPS} steps) ==="
@@ -291,7 +324,8 @@ _print_or_run stage3 python scripts/stage3_run.py \
   --page-preset "$PAGE_PRESET" \
   "${AUG_FLAG[@]}" \
   "${SPEED_FLAGS[@]}" \
-  "${ES_FLAGS[@]}"
+  "${ES_FLAGS[@]}" \
+  "${IDL_FLAGS[@]}"
 
 echo
 echo "=== $(date -Is)  ALL STAGES DONE ==="

@@ -30,11 +30,17 @@ class PageResolution:
 
 # Presets ordered cheapest -> richest. Numbers are conservative against
 # bf16 + grad checkpointing + 12-layer mBart decoder + batch_size=1.
+# ``paper`` is the paper-appendix-faithful resize (median 2200x1700);
+# only an 80 GB+ card can run it. Lower presets exist because our
+# operational hardware tops out at 46 GB (L40S) -- this is an
+# operational compromise, not a design limitation. Operators with
+# A100-80GB / H100 should use ``paper``.
 PRESETS: dict[str, PageResolution] = {
     "tiny":   PageResolution(height=700,  width=550),   # ~8-12 GB
     "small":  PageResolution(height=900,  width=700),   # ~12-16 GB
     "medium": PageResolution(height=1100, width=850),   # ~20-24 GB (3090)
     "large":  PageResolution(height=1400, width=1050),  # ~40 GB+ (A100/L40s)
+    "paper":  PageResolution(height=2200, width=1700),  # ~80 GB+ (A100-80GB / H100); paper-appendix-faithful
 }
 
 # (lower_gb_inclusive, preset) -- pick the highest preset whose
@@ -44,6 +50,7 @@ _VRAM_THRESHOLDS: list[tuple[int, str]] = [
     (14, "small"),
     (20, "medium"),
     (38, "large"),
+    (78, "paper"),    # ~80 GB headroom; A100-80GB at 79.4 GB qualifies
 ]
 
 

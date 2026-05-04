@@ -4,6 +4,63 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-04 — Phase H: paper-comparable IDL mix + paper page preset
+
+Closes two of the six paper-divergence findings flagged in the
+2026-05-04 code review:
+
+* **#1 Training data mix** (was PDFA-only) -- stages 2 + 3 now
+  optionally run on a paper-comparable PDFA + IDL weighted mixture.
+  Stage 1 stays PDFA-only by design (frozen-decoder calibration;
+  mix adds noise that doesn't help). The mixed loader
+  (`make_mixed_pdfa_idl_loader`) already existed with 15 tests; this
+  phase just plumbs the flag.
+* **#3 Page-resolution preset** (paper appendix says ~2200×1700;
+  we capped at 1400×1050) -- adds a `paper` preset behind a 78 GB
+  VRAM threshold. Operators with A100-80GB / H100 can opt in via
+  `PAGE_PRESET=paper` or `auto`. The lower presets remain because
+  our operational hardware tops out at 46 GB; this is an operational
+  compromise, not a design choice.
+
+### Added
+
+- `pretrain_chain.sh` envs:
+  - `DATA_MIX` (default `pdfa`; `pdfa+idl` enables the mix)
+  - `IDL_SHARDS_GLOB` (default `data/raw/idl/idl-train-*.tar`)
+  - `IDL_WEIGHT` (default 0.6 -- paper §3.5 leans toward real)
+- `--idl-shards` + `--idl-weight` flags on `stage{2,3}_run.py` and
+  `vista_ocr.entrypoints.stage{2,3}` (flag-set parity preserved per
+  the equivalence-test contract).
+- `vista_ocr.training.resolution.PRESETS["paper"]` =
+  `PageResolution(2200, 1700)` with a `78 GB` threshold in the
+  auto-detect table.
+- `paper` added to `--page-preset` choices on every stage / finetune
+  / SROIE entrypoint.
+
+### Tests
+
+8 new (6 chain DRY_RUN + 2 resolution): default DATA_MIX=pdfa keeps
+no `--idl-shards`; DATA_MIX=pdfa+idl propagates to stages 2+3 only
+(stage 1 stays PDFA-only by design); unknown DATA_MIX values reject
+loudly; `--page-preset paper` flows through; `IDL_WEIGHT` override
+works; missing IDL shards fail fast with a clear error. Resolution
+tests pin the 78 GB → paper threshold and the (2200, 1700)
+dimensions.
+
+Full suite green (450 passed) + sphinx -W clean.
+
+### Out of scope
+
+- IDL data download (operator's responsibility per box; chain
+  expects shards already on disk).
+- Mix ratio ablation (60/40 IDL/PDFA chosen as paper-comparable
+  starting point per §3.5; tunable via `IDL_WEIGHT`).
+
+### Operational note
+
+Run C is mid-stage-2 on the L40S as of this commit; do NOT pull
+on the L40S until Run C completes. Phase H lands for Run D.
+
 ## 2026-05-04 — pretrain chain: per-stage select_on + patience + auto-cap
 
 ### Symptom
