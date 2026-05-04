@@ -61,6 +61,60 @@ def test_sroie_handles_commas_in_text():
     assert line.text == "Hello, world, with, commas"
 
 
+def test_sroie_drops_zero_width_bbox():
+    """Real SROIE files contain occasional degenerate annotations where
+    the quad corners collapse to a vertical line (x1 == x2). Such
+    bboxes crash Albumentations mid-training (x_max <= x_min). Filter
+    at parse time."""
+    line = _parse_quad_line("100,200,100,200,100,210,100,210,18")
+    assert line is None
+
+
+def test_sroie_drops_zero_height_bbox():
+    """Same shape, horizontal-line collapse (y1 == y2)."""
+    line = _parse_quad_line("100,200,150,200,150,200,100,200,total")
+    assert line is None
+
+
+def test_sroie_drops_point_bbox():
+    """All four corners coincide -> degenerate point."""
+    line = _parse_quad_line("100,200,100,200,100,200,100,200,x")
+    assert line is None
+
+
+def test_sroie_to_manifest_skips_degenerate_quads(tmp_path):
+    """The manifest emitter must mirror iter_sroie's filter so a
+    downstream `vista-ocr finetune --train-manifest` can never receive
+    a zero-area bbox."""
+    import json
+    import subprocess
+    import sys
+    from PIL import Image
+
+    REPO = Path(__file__).resolve().parent.parent
+    EMITTER = REPO / "scripts" / "datasets" / "sroie_to_manifest.py"
+
+    root = tmp_path / "sroie"
+    test = root / "test"
+    test.mkdir(parents=True)
+    Image.new("L", (200, 100), 255).save(test / "doc.jpg")
+    (test / "doc.txt").write_text(
+        "10,20,100,20,100,50,10,50,GOOD\n"     # well-formed
+        "100,200,100,200,100,210,100,210,18\n"  # zero width
+        "200,300,250,300,250,300,200,300,X\n"   # zero height
+    )
+    out = tmp_path / "test.jsonl"
+    r = subprocess.run(
+        [sys.executable, str(EMITTER),
+         "--root", str(root), "--split", "test", "--out", str(out)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    [rec] = [json.loads(line) for line in out.read_text().splitlines()]
+    # Only the well-formed line survives.
+    assert rec["bboxes"] == [[10, 20, 100, 50, "GOOD"]]
+
+
 def test_sroie_iter_reads_train_split(tmp_path: Path):
     root = tmp_path / "sroie"
     train = root / "train"

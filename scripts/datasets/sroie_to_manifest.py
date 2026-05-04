@@ -34,7 +34,14 @@ def _parse_quad_line(s: str):
         return None
     xs = coords[0::2]
     ys = coords[1::2]
-    return [min(xs), min(ys), max(xs), max(ys), text]
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+    # Drop degenerate (zero-width / zero-height) bboxes -- mirrors
+    # the same filter in vista_ocr.data.sroie._parse_quad_line so the
+    # emitted manifest can't smuggle bad bboxes into a downstream
+    # finetune (Albumentations rejects them mid-training).
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return [x1, y1, x2, y2, text]
 
 
 def _emit_record(image_rel: str, lines: list[list]) -> dict:

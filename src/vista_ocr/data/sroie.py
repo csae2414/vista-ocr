@@ -55,7 +55,17 @@ def _parse_quad_line(s: str) -> Line | None:
         return None
     xs = coords[0::2]
     ys = coords[1::2]
-    return Line(text=text, bbox=(min(xs), min(ys), max(xs), max(ys)))
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+    # Real SROIE files contain occasional degenerate annotations where
+    # the four quad corners collapse to a line or a point (x1 == x2 or
+    # y1 == y2). Albumentations rejects zero-width / zero-height bboxes
+    # with "x_max is less than or equal to x_min" mid-training, which
+    # is what crashed the first SROIE finetune attempt. Drop these at
+    # parse time so the augment pass and any downstream geometry
+    # consumer see only well-formed AABBs.
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return Line(text=text, bbox=(x1, y1, x2, y2))
 
 
 def iter_sroie(cfg: SroieConfig) -> Iterator[Sample]:
