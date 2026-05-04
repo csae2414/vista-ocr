@@ -4,6 +4,110 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-04 — Phase J followup (four pre-A/B fixes)
+
+Closes four gaps surfaced after the J0+J1a+J2+J3 drop and before
+kicking off the post-J A/B (IAM effect floor + printed
+no-regression + OCR-vs-layout). Lands the pieces that make the
+A/B protocol valid in the first place.
+
+### Fix 1 — Stage 3 multitask carve-out for synth-handwritten
+
+`MixedTaskStream` previously relabelled every sample to one of
+the four stage-3 tasks per `TaskMix` weights, which silently
+overwrote synth's emission-time `task` (set via `--synth-task`).
+That invalidated the OCR-vs-layout ablation on stage 3.
+
+**Semantic change (deliberate, documented):** stage 3 introduces
+all four tasks **for real-data samples**; synth-handwritten
+samples carry their `--synth-task` end-to-end. Synth is NEVER
+relabelled to `region_ocr` or `find_it`. PDFA + IDL still go
+through the full four-task mix.
+
+**Distributional consequence (recorded for the A/B protocol):**
+when synth is on at `SYNTH_WEIGHT=0.2`, the effective stage-3
+task histogram shifts from 25/25/25/25 to 40/20/20/20 (the
+synth-task bucket gains 0.20 absolute). The A/B protocol must
+not conflate "synth on" with "task histogram rebalanced." If you
+want a clean synth-presence comparison, pass non-default `--w-*`
+weights so both arms produce the same effective histogram.
+- New helper: `vista_ocr.data.mixture.is_fixed_task_source` —
+  checks `Sample.meta["source_family"] == "synth_handwritten"`.
+  Robust against `Sample.source` string drift; documented opt-in
+  hook for any future fixed-task source.
+
+### Fix 2 — `scripts/datasets/setup_synth_corpus.sh` now exists
+
+The J3 docs referenced a setup script that wasn't in the tree.
+Now it is. Thin bash wrapper over a Python helper
+(`vista_ocr.data.synth._setup_corpus`) that handles HF dataset
+streaming, deterministic sentence sampling, SHA256 +
+`PROVENANCE.json`, idempotency, and offline modes.
+
+- `--dry-run` is **100% offline** — prints a JSON plan listing
+  every HF dataset id, pinned revision, license, output path, and
+  cap value. Test asserts this with `HF_HUB_OFFLINE=1` set.
+- `--fixture-only` writes the in-tree `corpora/synth/letterlike.txt`
+  + `PROVENANCE.json` into `--out-dir` without touching the
+  network. The offline subset of the operator workflow.
+- `--pg19-max-docs`, `--max-sentences`, `--seed` are pinned
+  defaults (1000 / 100000 / 0) with deterministic semantics.
+- Pinned dataset metadata: `Salesforce/wikitext` (CC-BY-SA 3.0,
+  config `wikitext-2-raw-v1`, revision
+  `b08601e04326c79dfdd32d625aee71d232d685c3`) + `deepmind/pg19`
+  (Apache 2.0, revision
+  `4d28bd77e66947ad3835cf78ed7aaeb4dd87ad8b`). Both revisions
+  resolved 2026-05-04 via `HfApi.dataset_info`. Operators can
+  override per run with `CORPUS_HF_REVISION_WIKITEXT` /
+  `CORPUS_HF_REVISION_PG19`; the override is recorded in
+  `PROVENANCE.json` for reproducibility.
+- **Drift detection on re-run.** A second run reads the prior
+  `PROVENANCE.json` and compares each on-disk file's SHA256
+  against the recorded value. Match → skip refetch. Mismatch →
+  hard-fail (don't silently re-use a tampered or partially-
+  downloaded file); `--force` overrides cleanly.
+- New in-tree fixture: `corpora/synth/letterlike.txt` (220
+  template-derived sentences, license-clean, no download).
+
+### Fix 3 — `tools/synth_target_distributions.py` is now correct
+
+The J0 #3 tool called `iter_pdfa(args.shards)` / `iter_idl(args.shards)`
+on the first commit, but those loaders take `PdfaConfig` /
+`IdlConfig`. Result: the tool never produced output. Now wraps
+in configs.
+
+- New helper `_expand_shards(pattern)` recognises bash brace
+  ranges (e.g. `{0000..0117}`) so the runbook's canonical glob
+  pattern works. Plain globs still fall through to `glob.glob()`.
+- New helper `_reject_locked_shards(paths)` hard-fails if the
+  glob pulled in PDFA shards 0118 (locked val) or 0119 (locked
+  test). Mirrors `vista_ocr.data.split.assert_not_test_shard`'s
+  refuse-rather-than-filter posture so a too-broad glob can't
+  silently leak the held-out test shard into a baseline report.
+
+### Fix 4 — End-to-end synth → loader → collate → Batch is tested
+
+Pre-followup, every Phase J piece had unit tests but no test
+asserted that the full path produces a valid `Batch`. Added 4
+e2e tests (`tests/test_synth_dataloader_e2e.py`) covering pure
+collate invariants, the synth-only zero-PDFA contract, the
+multi-worker pickle path (`num_workers=2` + spawn start method),
+and the `--synth-task=ocr` ablation (no spatial-token leak into
+labels, low `<unk>` rate).
+
+- `make_mixed_loader` docstring now explicitly documents the
+  synth-only contract (`pdfa_shards=[]` + `pdfa_weight=0.0` is
+  supported and tested).
+- Acknowledged coverage hole: e2e tests skip when DejaVu test
+  font is absent (uncommon on Linux CI; common on macOS).
+  Treat macOS synth coverage as best-effort until a tiny
+  in-tree test font is bundled.
+
+### Test count
+
+Full suite: **510 passed, 3 skipped** (was 485). New tests: 7 +
+6 + 4 + 8 = 25 across the four fixes. Sphinx `-W` clean.
+
 ## 2026-05-04 — Phase J: license-clean handwritten synth (J0+J1a+J2)
 
 Add license-clean synthetic handwritten line generator (English).

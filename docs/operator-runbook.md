@@ -159,6 +159,41 @@ DATA_MIX=pdfa+synth SYNTH_TASK=ocr ...   # synth emits task="ocr"
 If post-J IAM A/B with `SYNTH_TASK=ocr` beats `SYNTH_TASK=ocr_layout`
 by ≥ 2 points, flip the chain default. CHANGELOG records the flip.
 
+#### Stage-3 task histogram shift when synth is on (load-bearing)
+
+Stage 3 normally introduces all four tasks (ocr / ocr_layout /
+region_ocr / find_it) at uniform 25/25/25/25 weights via
+`MixedTaskStream`. **Synth-handwritten samples are carved out of
+that relabelling** (see `vista_ocr.data.mixture` module docstring;
+the carve-out exists so `--synth-task` survives end-to-end into
+the post-J OCR-vs-layout ablation).
+
+The carve-out shifts the effective stage-3 task histogram when
+synth is on:
+
+| Mode | ocr | ocr_layout | region_ocr | find_it |
+|---|---|---|---|---|
+| Synth off (default) | 0.25 | 0.25 | 0.25 | 0.25 |
+| `SYNTH_WEIGHT=0.2`, `SYNTH_TASK=ocr_layout` | 0.20 | **0.40** | 0.20 | 0.20 |
+| `SYNTH_WEIGHT=0.2`, `SYNTH_TASK=ocr`        | **0.40** | 0.20 | 0.20 | 0.20 |
+
+**Implication for the post-J A/B protocol:** turning synth on AND
+turning synth off changes BOTH (a) the data content and (b) the
+task histogram. A naive synth-on-vs-off comparison conflates the
+two effects.
+
+If you want a clean "synth content presence" comparison
+independent of task-histogram shape, pass non-default `--w-*`
+weights so both arms produce the same effective histogram. For
+example, with `SYNTH_TASK=ocr_layout, SYNTH_WEIGHT=0.2`, run
+stage 3 with `--w-ocr-layout 0.0625 --w-ocr 0.3125 --w-region-ocr 0.3125
+--w-find-it 0.3125` so the on-synth arm's effective histogram lands
+back at 25/25/25/25.
+
+Document which protocol you ran in the BENCHMARKS row notes; the
+two protocols answer different questions (joint effect vs synth-
+content-only).
+
 ### Smoke gate before any long run
 
 ```bash

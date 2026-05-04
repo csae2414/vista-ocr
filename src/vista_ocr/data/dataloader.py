@@ -401,9 +401,15 @@ def make_mixed_loader(
 ) -> DataLoader:
     """4-mode mixed loader: ``pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth``.
 
-    Sources with weight 0 are dropped. PDFA is always present; the
-    other two are optional. Validates that weights are non-negative
-    and sum > 0.
+    Sources with weight 0 are dropped. Validates that weights are
+    non-negative and sum > 0.
+
+    Synth-only runs are explicitly supported: pass
+    ``pdfa_shards=[]`` together with ``pdfa_weight=0.0`` and a
+    non-zero ``synth_weight`` (post-J A/B #3 in
+    ``notes/plan_phase_j_followup.md`` Fix 4 covers this case).
+    Synth-only loaders skip the PDFA per-worker shard slice
+    entirely; only the synth source is appended.
 
     :param synth_factory: Picklable callable taking ``worker_seed`` and
         returning a ``Iterator[Sample]``. Use
