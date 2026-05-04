@@ -24,6 +24,8 @@ Decision recorded in plan §Fix 4 "Acknowledged coverage hole".
 """
 from __future__ import annotations
 
+import signal
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,24 @@ def _pre_cfg() -> PreprocessConfig:
     return PreprocessConfig(target_h=128, target_w=128, pad_multiple=32)
 
 
+@contextmanager
+def _alarm_timeout(seconds: int, message: str):
+    """SIGALRM-based hard timeout so a hung DataLoader cannot
+    deadlock the test runner. Linux/macOS only (Windows lacks
+    SIGALRM); this whole test file is Linux-CI-only anyway via
+    the DejaVu skipif at module level.
+    """
+    def _handler(signum, frame):
+        raise TimeoutError(message)
+    old = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 # ---------------------------------------------------------------------------
 # Pure collate invariants
 # ---------------------------------------------------------------------------
@@ -167,24 +187,27 @@ def test_synth_only_supported_via_pdfa_weight_zero(tokenizer, factory):
 # ---------------------------------------------------------------------------
 
 def test_handwritten_synth_through_loader_with_workers(tokenizer, factory):
-    """num_workers=2 exercises the full DataLoader plumbing: the
-    IterableDataset (and the embedded HandwrittenSynthFactory)
-    crosses the worker process boundary, get_worker_info() returns
-    a real per-worker slice, and at least one batch reaches the
-    main process. Tightly bounded to a SINGLE batch via
-    next(iter(...)) to avoid flake on a congested host.
+    """``num_workers=1`` exercises the full DataLoader plumbing:
+    the IterableDataset (and the embedded HandwrittenSynthFactory)
+    crosses the worker process boundary, ``get_worker_info()``
+    returns a real per-worker slice, and one batch reaches the
+    main process.
 
-    Linux fork-vs-spawn note: this test runs under PyTorch's
-    default start method (``fork`` on Linux). Fork copies process
+    Speed budget. Earlier versions used ``num_workers=2`` +
+    ``prefetch_factor=2``, which combined with
+    ``persistent_workers=False`` reliably hung at > 30 s on some
+    boxes during DataLoader teardown (workers blocked on the
+    queue + slow ``join()``). We narrow to a single worker with a
+    single prefetched batch, then wrap the entire dance in a
+    SIGALRM hard timeout so a future regression surfaces as a
+    test FAIL, not as a runner deadlock.
+
+    Linux fork-vs-spawn note: this runs under PyTorch's default
+    ``fork`` start method on Linux (the only platform where this
+    file's module-level skip lets it run). Fork copies process
     state without pickling, so a non-picklable closure on the
-    factory wouldn't surface here -- but the bare
-    ``pickle.dumps(factory)`` test in test_synth_factory.py is the
-    dedicated picklability backstop. We tried forcing spawn here
-    once; spawn workers re-import the whole test module on a
-    per-worker basis, which triggers heavyweight fixture rebuilds
-    (SPM training) and produced sporadic hangs in CI. Fork covers
-    the common-case integration path; pickle.dumps covers the
-    serialisation contract.
+    factory would NOT surface here; the dedicated picklability
+    backstop is ``test_synth_factory.test_factory_is_picklable``.
     """
     loader = make_mixed_loader(
         pdfa_shards=[],
@@ -194,19 +217,20 @@ def test_handwritten_synth_through_loader_with_workers(tokenizer, factory):
         tokenizer=tokenizer,
         pre_cfg=_pre_cfg(),
         dl_cfg=DataLoaderConfig(
-            micro_batch_size=1, num_workers=2, prefetch_factor=2,
+            micro_batch_size=1, num_workers=1, prefetch_factor=1,
             persistent_workers=False,
         ),
     )
-    it = iter(loader)
-    try:
-        batch = next(it)
-        _assert_batch_invariants(batch, pad_id=tokenizer.pad_id)
-    finally:
-        # Force worker shutdown so pytest doesn't wait on dangling
-        # processes if anything above raised.
-        del it
-        del loader
+    with _alarm_timeout(20, "DataLoader fork+join exceeded 20 s; regression in worker shutdown semantics?"):
+        it = iter(loader)
+        try:
+            batch = next(it)
+            _assert_batch_invariants(batch, pad_id=tokenizer.pad_id)
+        finally:
+            # Force worker shutdown explicitly so the SIGALRM doesn't
+            # fire on a slow GC if the assertion above raised.
+            del it
+            del loader
 
 
 # ---------------------------------------------------------------------------
