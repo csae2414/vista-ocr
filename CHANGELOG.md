@@ -117,13 +117,11 @@ ablation (no spatial-token leak into labels, low `<unk>` rate).
 
 ### Test count
 
-New tests: ~30 across the four fixes (Fix 3: 7, Fix 1: 6,
-Fix 4: 4, Fix 2: 12). Most run cleanly in any pytest env;
-``test_synth_dataloader_e2e.test_handwritten_synth_through_loader_with_workers``
-is integration-only and skips when DejaVu is absent OR when the
-host blocks ``multiprocessing.resource_sharer`` (sandboxed/seccomp
-CI). Run on an unconfined Linux dev box to exercise the full
-matrix. Sphinx ``-W`` clean.
+New tests: ~28 across the four fixes (Fix 3: 7, Fix 1: 6,
+Fix 4: 3, Fix 2: 12). Run cleanly in any pytest env that has
+DejaVu (``/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf``);
+the synth e2e tests skip at module level when the font is
+absent (uncommon on Linux; common on macOS). Sphinx ``-W`` clean.
 
 ## 2026-05-04 — Phase J: license-clean handwritten synth (J0+J1a+J2)
 
