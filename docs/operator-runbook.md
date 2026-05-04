@@ -71,6 +71,94 @@ INIT_DECODER_FROM=random GRAD_ACCUM_STEPS=1 AUGMENT=0 \
   ./scripts/pretrain_chain.sh 2>&1 | tee logs/pretrain_chain.log
 ```
 
+### Phase J: synthetic handwritten data (opt-in)
+
+Phase J adds a license-clean synthetic handwritten line generator
+that mixes into stages 2+3 alongside PDFA (and optional IDL). Stage
+1 + 1b remain PDFA-only. Synth is opt-in; default `DATA_MIX=pdfa`
+behaviour is bit-identical to pre-Phase-J.
+
+**Honest framing:** this is a synthetic approximation for
+distribution coverage, NOT a paper-equivalent reproduction of
+synthetic IAM/RIMES; per-writer variation is not modeled. Do not
+read the IAM row as paper-comparable until the post-J A/Bs land
+(see `BENCHMARKS.md`).
+
+#### Stage corpora + fonts (one-time)
+
+The runtime never downloads. Stage corpora locally first (the
+acquisition step is the only place HF dataset names appear):
+
+```bash
+./scripts/datasets/setup_synth_corpus.sh   # writes corpora/synth/en/*.txt
+# Fonts: download 8-12 OFL/Apache handwritten TTFs into
+# /path/to/handwritten/fonts/. PROVENANCE.json under
+# vista_ocr/data/synth/fonts/handwritten/ tracks which fonts have
+# been bundled (license + SHA256 binding); start there.
+```
+
+#### Run with synth on
+
+```bash
+DATA_MIX=pdfa+synth \
+SYNTH_TEXT_CORPUS_EN=corpora/synth/en/pg19.txt \
+SYNTH_FONT_DIR=/path/to/handwritten/fonts \
+SYNTH_WEIGHT=0.2 \
+  ./scripts/pretrain_chain.sh
+```
+
+`DATA_MIX` matrix (the four supported shapes):
+
+| `DATA_MIX` | PDFA | IDL | Synth |
+|---|---|---|---|
+| `pdfa` (default) | 100% | — | — |
+| `pdfa+idl` | `1 - IDL_WEIGHT` | `IDL_WEIGHT` (default 0.6) | — |
+| `pdfa+synth` | `1 - SYNTH_WEIGHT` | — | `SYNTH_WEIGHT` (default 0.2) |
+| `pdfa+idl+synth` | `1 - IDL_WEIGHT - SYNTH_WEIGHT` | `IDL_WEIGHT` | `SYNTH_WEIGHT` |
+
+The chain hard-fails if `IDL_WEIGHT + SYNTH_WEIGHT >= 1.0` (which
+would yield `pdfa_frac <= 0`). Reduce one of the two.
+
+#### Tokenizer audit before French (gate for J1b)
+
+Production SPM is English-heavy. Run the FR-coverage audit BEFORE
+adding French synth — otherwise the model trains to predict `<unk>`
+on French text, not French OCR.
+
+```bash
+python tools/audit_fr_coverage.py \
+  --spm data/processed/vocab/sp_en_16k.model \
+  --corpus corpora/synth/fr/wikitext_fr.txt
+```
+
+Exit 0 = `<= 0.5%` `<unk>` AND every FR accent / ligature / curly
+apostrophe encodes without `<unk>`. Exit 1 = block J1b until SPM is
+retrained with a FR-mixed corpus.
+
+#### Distribution sanity bands
+
+```bash
+python tools/synth_target_distributions.py \
+  --source pdfa --shards 'data/raw/pdfa/pdfa-eng-train-{0000..0117}.tar' \
+  --out notes/synth_target_distributions.json --n 5000
+```
+
+PDFA / IDL bands are **caveats** (catch pathological synth output
+like avg chars/line=80 vs real=25), NOT fitting targets. IAM bands
+are the actual fit target if/when IAM is accessible.
+
+#### OCR-vs-layout ablation
+
+For IAM, recognition can matter more than bbox layout during
+pretraining. Flip the synth-side task tag:
+
+```bash
+DATA_MIX=pdfa+synth SYNTH_TASK=ocr ...   # synth emits task="ocr"
+```
+
+If post-J IAM A/B with `SYNTH_TASK=ocr` beats `SYNTH_TASK=ocr_layout`
+by ≥ 2 points, flip the chain default. CHANGELOG records the flip.
+
 ### Smoke gate before any long run
 
 ```bash

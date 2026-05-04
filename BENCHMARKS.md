@@ -66,6 +66,32 @@ generated so the BENCHMARKS comparison is unambiguous.
 Headline rows depend on licence-restricted datasets (SROIE, IAM,
 MAURDOR) that are not bundled with the repository. PRs welcome.
 
+### IAM / RIMES rows: synth-data caveat (Phase J, 2026-05-04)
+
+The paper trains on undisclosed synthetic IAM (30K) + synthetic
+RIMES (30K) corpora. We do NOT replicate those. Phase J ships
+`vista_ocr.data.synth.handwritten.HandwrittenLineSynth`, which is a
+**license-clean approximation** for distribution coverage (text-source
++ TTF font rendering with mask-derived bboxes), NOT a paper-equivalent
+reproduction. Per-writer variation is not modeled.
+
+The IAM row in the table above is therefore expected to read above
+the paper's WER 10.14 even after Phase J lands. Two A/B comparisons
+gate the synth source's status:
+
+1. **IAM effect floor:** finetune IAM with `--synth-handwritten`
+   (`DATA_MIX=pdfa+synth` or `pdfa+idl+synth`) and again without,
+   from the same Run-E ckpt. Synth-on must improve IAM CER by
+   ≥ 5 points; otherwise revert J2 (chain integration), keep J1
+   (generator code) in-tree behind the flag.
+2. **Printed-OCR no-regression:** the same synth-on ckpt evaluated
+   on PDFA test-shard 0119 + SROIE finetune must not regress vs
+   synth-off baseline by more than 2% absolute.
+
+Both A/Bs run after the next pretraining completes; results will be
+posted to this section. Until then, **no IAM/RIMES row should be
+interpreted as comparable to the paper's IAM/RIMES rows**.
+
 ## Pretraining run, 2026-05-02 (RTX 3090, 24 GB)
 
 End-of-stage **train** loss is the trailing 50-step mean printed by

@@ -4,6 +4,97 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-04 — Phase J: license-clean handwritten synth (J0+J1a+J2)
+
+Add license-clean synthetic handwritten line generator (English).
+NOTE: this is a synthetic approximation for distribution coverage,
+not a paper-equivalent reproduction of synthetic IAM/RIMES;
+per-writer variation is not modeled. French (J1b) is gated on a
+tokenizer-coverage audit (`tools/audit_fr_coverage.py`) that must
+run on the box owning the production SPM model; if `<unk>` rate
+> 0.5% on FR text, French synth is deferred.
+
+### Added
+
+- `vista_ocr.data.synth.handwritten.HandwrittenLineSynth` — page
+  generator parameterised on language. Per-page text source +
+  font selection; per-line render-then-crop with **mask-derived
+  bboxes** (np-argwhere on the rendered line raster, robust under
+  any future stroke-thickness / dilation / erosion / rotation).
+  Emits `Sample(task="ocr_layout", source="synth_handwritten:<lang>:<tag>",
+  meta={...})` matching the PDFA emitter's contract; drop-in
+  compatible with `MixedStream`.
+- `vista_ocr.data.synth.handwritten.TextSource` — local-file only.
+  Training NEVER downloads; HF dataset names live in
+  `scripts/datasets/setup_synth_corpus.sh`. Missing corpus path
+  hard-fails at parse time.
+- `vista_ocr.data.synth.factory.HandwrittenSynthFactory` —
+  picklable dataclass that builds the generator inside DataLoader
+  workers with per-worker seeds.
+- `vista_ocr.data.dataloader.make_mixed_loader` — 4-mode mixed
+  loader: `pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth`.
+  Validates non-negative weights, non-zero sum, and that
+  `synth_weight > 0` implies a `synth_factory`.
+- Stage 2 + Stage 3 entrypoints (and `scripts/stage{2,3}_run.py`
+  mirrors) gain `--synth-handwritten`, `--synth-weight`,
+  `--synth-text-corpus-en`, `--synth-font-dir`, `--synth-task`,
+  `--synth-language`. Flag-set parity is enforced by
+  `tests/test_stage_equivalence.py`.
+- `scripts/pretrain_chain.sh`: `DATA_MIX` matrix supports
+  `pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth`. New envs
+  `SYNTH_WEIGHT`, `SYNTH_TEXT_CORPUS_EN`, `SYNTH_FONT_DIR`,
+  `SYNTH_TASK`. Mix-fraction validation hard-fails when
+  `IDL_WEIGHT + SYNTH_WEIGHT >= 1.0`. Stage 1 + 1b remain
+  PDFA-only by design (Option B per Phase J plan).
+- `tools/audit_fr_coverage.py` — J0 #2 tokenizer-coverage gate.
+  Reports `<unk>` rate + per-character coverage of the full FR
+  accent / ligature / curly-apostrophe set. Exits 0 only if
+  `<= 0.5%` `<unk>` AND every target char encodes without `<unk>`.
+- `tools/synth_target_distributions.py` — J0 #3 sanity-band
+  baseline over PDFA / IDL / IAM. The bands are caveats, NOT
+  fitting targets — printed-doc distributions are wrong fits for
+  handwritten synth.
+- `vista_ocr/data/synth/fonts/handwritten/PROVENANCE.json` +
+  `HOLDOUT.md` — per-font license + SHA256 binding (audit test
+  enforces SHA256 match when fonts are bundled), and the
+  synth-overfit holdout doc. Font binaries are NOT bundled in
+  this drop; the generator works via the operator-facing
+  `--synth-font-dir` injection.
+- `pyproject.toml` — `[tool.setuptools.package-data]` declaration
+  so `.ttf` / `.LICENSE.txt` / `.json` / `.md` ship in the wheel.
+
+### Behaviour unchanged when synth is off
+
+`DATA_MIX=pdfa` and `DATA_MIX=pdfa+idl` produce bit-identical
+chain DAGs to the pre-Phase-J behaviour, enforced by
+`test_phase_j_default_off_path_omits_synth_flags`. Synth is
+strictly opt-in.
+
+### What is NOT in this drop
+
+- **No bundled font binaries.** OFL/Apache fonts must be downloaded
+  by an operator and pointed at via `--synth-font-dir`.
+- **French.** Gated; tokenizer audit must run first (see J0 tools).
+- **Per-writer variation.** Documented gap; not feasible without
+  scraping IAM itself.
+- **Effect on benchmarks.** Phase J ships the *capability*. The
+  IAM A/B (synth-on vs synth-off effect floor) and PDFA/SROIE
+  no-regression A/B run after the next pretraining-from-Run-E
+  completes; result will be noted in a follow-up CHANGELOG entry.
+
+### How to enable
+
+```bash
+DATA_MIX=pdfa+synth \
+SYNTH_TEXT_CORPUS_EN=corpora/synth/en/pg19.txt \
+SYNTH_FONT_DIR=/path/to/handwritten/fonts \
+SYNTH_WEIGHT=0.2 \
+  ./scripts/pretrain_chain.sh
+```
+
+See `docs/operator-runbook.md` §3.1 ("Phase J: synthetic
+handwritten data") for the runbook.
+
 ## 2026-05-04 — Phase I: stage 1b (unfrozen OCR-only calibration)
 
 Closes reviewer finding #2 (calibration curriculum collapsed).
