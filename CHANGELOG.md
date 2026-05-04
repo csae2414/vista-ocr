@@ -105,8 +105,13 @@ labels, low `<unk>` rate).
 
 ### Test count
 
-Full suite: **510 passed, 3 skipped** (was 485). New tests: 7 +
-6 + 4 + 8 = 25 across the four fixes. Sphinx `-W` clean.
+New tests: ~30 across the four fixes (Fix 3: 7, Fix 1: 6,
+Fix 4: 4, Fix 2: 12). Most run cleanly in any pytest env;
+``test_synth_dataloader_e2e.test_handwritten_synth_through_loader_with_workers``
+is integration-only and skips when DejaVu is absent OR when the
+host blocks ``multiprocessing.resource_sharer`` (sandboxed/seccomp
+CI). Run on an unconfined Linux dev box to exercise the full
+matrix. Sphinx ``-W`` clean.
 
 ## 2026-05-04 — Phase J: license-clean handwritten synth (J0+J1a+J2)
 
