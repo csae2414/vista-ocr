@@ -323,3 +323,133 @@ def test_phase_i_stage1b_runs_when_enabled():
     assert s2
     assert "checkpoints/stage1b/ckpt_final.pt" in s2.group(1)
     assert "checkpoints/stage1/ckpt_final.pt" not in s2.group(1)
+
+
+# ---------- Phase J: synth-handwritten chain integration -------------
+
+
+def _setup_synth_corpus(tmp: Path) -> Path:
+    """Stage a tiny English corpus file so DATA_MIX=pdfa+synth resolves."""
+    p = tmp / "data/synth_corpus_en.txt"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("hello world\nfoo bar baz qux quux\n", encoding="utf-8")
+    return p
+
+
+def _run_dry_with_corpus(env_overrides: dict) -> str:
+    """Variant of ``_run_dry`` that also stages a synth corpus file."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        _setup_fake_repo_for_dry_run(tmp)
+        corpus = _setup_synth_corpus(tmp)
+        env = {
+            **os.environ, "DRY_RUN": "1",
+            "SYNTH_TEXT_CORPUS_EN": str(corpus),
+            **env_overrides,
+        }
+        r = subprocess.run(
+            ["bash", "scripts/pretrain_chain.sh"],
+            cwd=tmp, env=env, capture_output=True, text=True, timeout=30,
+        )
+        return r.stdout + "\n--STDERR--\n" + r.stderr
+
+
+def test_phase_j_synth_propagates_to_stages_2_and_3_only():
+    """DATA_MIX=pdfa+synth: stages 2+3 receive --synth-handwritten;
+    stage 1 + 1b do NOT (Option B per plan §0b)."""
+    out = _run_dry_with_corpus({"DATA_MIX": "pdfa+synth"})
+    s1 = re.search(r"^DRY_RUN \[stage1\]: (.+)$", out, re.MULTILINE)
+    assert s1
+    assert "--synth-handwritten" not in s1.group(1), (
+        "stage 1 must remain synth-free (frozen decoder calibration)"
+    )
+    for stage in ("stage2", "stage3"):
+        m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+        assert m, f"{stage} arglist missing"
+        args = m.group(1)
+        assert "--synth-handwritten" in args
+        assert "--synth-weight 0.2" in args
+        assert "--synth-text-corpus-en" in args
+        assert "--synth-task ocr_layout" in args
+
+
+def test_phase_j_stage1b_remains_synth_free():
+    """Per plan §0b Option B, synth-handwritten does NOT enter stage 1b
+    (which still runs ``task=ocr_layout`` over PDFA-only). The chain
+    must not pass --synth-* to stage1b_run.py."""
+    out = _run_dry_with_corpus({
+        "DATA_MIX": "pdfa+synth",
+        "STAGE1B_STEPS": "10000",
+    })
+    s1b = re.search(r"^DRY_RUN \[stage1b\]: (.+)$", out, re.MULTILINE)
+    assert s1b
+    assert "--synth-handwritten" not in s1b.group(1)
+
+
+def test_phase_j_pdfa_idl_synth_three_way_mix():
+    """DATA_MIX=pdfa+idl+synth: stages 2+3 receive BOTH --idl-shards
+    and --synth-handwritten."""
+    out = _run_dry_with_corpus({"DATA_MIX": "pdfa+idl+synth"})
+    for stage in ("stage2", "stage3"):
+        m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+        assert m
+        args = m.group(1)
+        assert "--idl-shards" in args
+        assert "--synth-handwritten" in args
+
+
+def test_phase_j_synth_task_override():
+    """SYNTH_TASK=ocr forwards as --synth-task ocr (the OCR-vs-layout
+    ablation in plan §10b #4)."""
+    out = _run_dry_with_corpus({
+        "DATA_MIX": "pdfa+synth",
+        "SYNTH_TASK": "ocr",
+    })
+    s2 = re.search(r"^DRY_RUN \[stage2\]: (.+)$", out, re.MULTILINE)
+    assert s2
+    assert "--synth-task ocr" in s2.group(1)
+
+
+def test_phase_j_mix_validation_fires_on_negative_pdfa_fraction():
+    """IDL_WEIGHT=0.7 + SYNTH_WEIGHT=0.4 implies pdfa_frac=-0.1.
+    Chain must hard-fail with a clear error before launching."""
+    out = _run_dry_with_corpus({
+        "DATA_MIX": "pdfa+idl+synth",
+        "IDL_WEIGHT": "0.7",
+        "SYNTH_WEIGHT": "0.4",
+    })
+    assert "Mix-fraction validation" in out
+
+
+def test_phase_j_synth_requires_corpus_path():
+    """DATA_MIX=pdfa+synth without SYNTH_TEXT_CORPUS_EN must hard-fail
+    rather than silently downloading. The chain never pulls from HF
+    inside training."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        _setup_fake_repo_for_dry_run(tmp)
+        env = {**os.environ, "DRY_RUN": "1", "DATA_MIX": "pdfa+synth"}
+        # Explicitly clear if inherited.
+        env.pop("SYNTH_TEXT_CORPUS_EN", None)
+        r = subprocess.run(
+            ["bash", "scripts/pretrain_chain.sh"],
+            cwd=tmp, env=env, capture_output=True, text=True, timeout=30,
+        )
+        assert r.returncode != 0
+        assert "SYNTH_TEXT_CORPUS_EN is empty" in (r.stdout + r.stderr)
+
+
+def test_phase_j_default_off_path_omits_synth_flags():
+    """When DATA_MIX=pdfa or DATA_MIX=pdfa+idl, no stage receives any
+    --synth-* flag. Catches accidental drift in the default-off path
+    that would silently change pre-J2 chain behaviour."""
+    for mix in ("pdfa", "pdfa+idl"):
+        out = _run_dry({"DATA_MIX": mix})
+        for stage in ("stage1", "stage2", "stage3"):
+            m = re.search(rf"^DRY_RUN \[{stage}\]: (.+)$", out, re.MULTILINE)
+            assert m, f"{stage} arglist missing for DATA_MIX={mix}"
+            args = m.group(1)
+            assert "--synth-handwritten" not in args
+            assert "--synth-weight" not in args
+            assert "--synth-text-corpus-en" not in args
+            assert "--synth-task" not in args

@@ -60,6 +60,17 @@ def main() -> None:
                          "task-relabelled stream alongside PDFA.")
     ap.add_argument("--idl-weight", type=float, default=0.6,
                     help="Phase H: IDL fraction of the stage-3 mix.")
+    ap.add_argument("--synth-handwritten", action="store_true",
+                    help="Phase J: mix license-clean handwritten synth into the train stream.")
+    ap.add_argument("--synth-weight", type=float, default=0.2,
+                    help="Synth fraction when --synth-handwritten is set.")
+    ap.add_argument("--synth-text-corpus-en", nargs="+", type=Path, default=None,
+                    help="Local UTF-8 corpus path(s) for English synth (NEVER downloads).")
+    ap.add_argument("--synth-font-dir", type=Path, default=None,
+                    help="Override packaged handwritten font dir.")
+    ap.add_argument("--synth-task", default="ocr_layout", choices=("ocr", "ocr_layout"),
+                    help="Synth-only task tag for the OCR-vs-layout ablation.")
+    ap.add_argument("--synth-language", default="en", choices=("en", "fr"))
     ap.add_argument("--val-shard", required=True, type=Path)
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -177,8 +188,34 @@ def main() -> None:
     LOG.info("Stage-3 task mix: %s", {k: round(v, 3) for k, v in weights.items()})
     mix = TaskMix(weights=weights)
 
+    synth_factory = None
+    if args.synth_handwritten:
+        from vista_ocr.data.synth.factory import HandwrittenSynthFactory
+        if not args.synth_text_corpus_en:
+            raise SystemExit("--synth-handwritten set but --synth-text-corpus-en is empty.")
+        font_paths = None
+        if args.synth_font_dir is not None:
+            font_paths = sorted(args.synth_font_dir.glob("*.ttf"))
+            if not font_paths:
+                raise SystemExit(f"No .ttf files in --synth-font-dir {args.synth_font_dir}")
+        synth_factory = HandwrittenSynthFactory(
+            text_corpus_paths=[Path(p) for p in args.synth_text_corpus_en],
+            language=args.synth_language,
+            font_paths=font_paths,
+            task=args.synth_task,
+            canvas_size=(args.page_h, args.page_w),
+        )
+
+    idl_w = args.idl_weight if args.idl_shards else 0.0
+    synth_w = args.synth_weight if synth_factory is not None else 0.0
+    pdfa_w = 1.0 - idl_w - synth_w
+    if pdfa_w <= 0:
+        raise SystemExit(
+            f"Mix-fraction validation: pdfa_weight={pdfa_w:.3f} (must be > 0)."
+        )
+
     # Multitask relabelling needs the raw Sample, so we stream in-process.
-    # Phase H: when --idl-shards is set, mix PDFA + IDL at the Sample
+    # Phase H/J: mix PDFA + optional IDL + optional synth at the Sample
     # layer (before MixedTaskStream relabelling) via MixedStream.
     def stage3_stream():
         from vista_ocr.data.idl import IdlConfig, iter_idl
@@ -188,25 +225,25 @@ def main() -> None:
             for shard in args.train_shards:
                 yield from iter_pdfa(PdfaConfig(shards=[str(shard)]))
 
+        sources = [MixedStreamSource(name="pdfa", stream=_pdfa_samples(), weight=pdfa_w)]
         if args.idl_shards:
             def _idl_samples():
                 for shard in args.idl_shards:
                     yield from iter_idl(IdlConfig(shards=[str(shard)]))
-
-            idl_w = args.idl_weight
-            pdfa_w = 1.0 - idl_w
+            sources.append(MixedStreamSource(name="idl", stream=_idl_samples(), weight=idl_w))
+        if synth_factory is not None:
+            sources.append(MixedStreamSource(
+                name="synth", stream=synth_factory(0), weight=synth_w,
+            ))
+        if len(sources) > 1:
             LOG.info(
-                "Phase H: stage-3 PDFA+IDL mix (%.2f / %.2f); "
-                "PDFA shards=%d, IDL shards=%d",
-                pdfa_w, idl_w, len(args.train_shards), len(args.idl_shards),
+                "Phase H/J stage-3 mix: pdfa=%.2f idl=%.2f synth=%.2f; "
+                "pdfa_shards=%d, idl_shards=%d, synth=%s",
+                pdfa_w, idl_w, synth_w,
+                len(args.train_shards), len(args.idl_shards or []),
+                "ON" if synth_factory else "off",
             )
-            base = MixedStream(
-                sources=[
-                    MixedStreamSource(name="pdfa", stream=_pdfa_samples(), weight=pdfa_w),
-                    MixedStreamSource(name="idl",  stream=_idl_samples(),  weight=idl_w),
-                ],
-                seed=0,
-            )
+            base = MixedStream(sources=sources, seed=0)
         else:
             base = _pdfa_samples()
         relabelled = MixedTaskStream(base, mix, seed=0)

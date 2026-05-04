@@ -40,7 +40,7 @@ Two policies are supported via the ``on_short_shards`` flag on
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
@@ -226,6 +226,8 @@ class _IterableMixedDataset(IterableDataset):
         idl_cfg_kwargs: dict | None = None,
         seed: int = 0,
         on_short_shards: str = "broadcast",
+        synth_factory: Callable[[int], Iterator[Sample]] | None = None,
+        synth_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.pdfa_shards = pdfa_shards
@@ -239,6 +241,8 @@ class _IterableMixedDataset(IterableDataset):
         self.idl_cfg_kwargs = idl_cfg_kwargs or {}
         self.seed = seed
         self.on_short_shards = on_short_shards
+        self.synth_factory = synth_factory
+        self.synth_weight = synth_weight
 
     def __iter__(self) -> Iterator[Batch]:
         info = get_worker_info()
@@ -283,7 +287,7 @@ class _IterableMixedDataset(IterableDataset):
             return out
 
         sources: list[MixedStreamSource] = []
-        if pdfa_slice:
+        if pdfa_slice and self.pdfa_weight > 0:
             pdfa_cfg = PdfaConfig(
                 shards=pdfa_slice,
                 **_maybe_per_worker_seed(self.pdfa_cfg_kwargs, pdfa_bcast),
@@ -291,13 +295,18 @@ class _IterableMixedDataset(IterableDataset):
             sources.append(MixedStreamSource(
                 name="pdfa", weight=self.pdfa_weight, stream=iter_pdfa(pdfa_cfg),
             ))
-        if idl_slice:
+        if idl_slice and self.idl_weight > 0:
             idl_cfg = IdlConfig(
                 shards=idl_slice,
                 **_maybe_per_worker_seed(self.idl_cfg_kwargs, idl_bcast),
             )
             sources.append(MixedStreamSource(
                 name="idl", weight=self.idl_weight, stream=iter_idl(idl_cfg),
+            ))
+        if self.synth_factory is not None and self.synth_weight > 0:
+            sources.append(MixedStreamSource(
+                name="synth", weight=self.synth_weight,
+                stream=self.synth_factory(worker_seed),
             ))
         if not sources:
             return
@@ -374,8 +383,74 @@ def make_mixed_pdfa_idl_loader(
     )
 
 
+def make_mixed_loader(
+    pdfa_shards: list[str],
+    tokenizer: VistaTokenizer,
+    pre_cfg: PreprocessConfig,
+    *,
+    idl_shards: list[str] | None = None,
+    synth_factory: Callable[[int], Iterator[Sample]] | None = None,
+    pdfa_weight: float = 1.0,
+    idl_weight: float = 0.0,
+    synth_weight: float = 0.0,
+    dl_cfg: DataLoaderConfig | None = None,
+    pdfa_cfg_kwargs: dict | None = None,
+    idl_cfg_kwargs: dict | None = None,
+    seed: int = 0,
+    on_short_shards: str = "broadcast",
+) -> DataLoader:
+    """4-mode mixed loader: ``pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth``.
+
+    Sources with weight 0 are dropped. PDFA is always present; the
+    other two are optional. Validates that weights are non-negative
+    and sum > 0.
+
+    :param synth_factory: Picklable callable taking ``worker_seed`` and
+        returning a ``Iterator[Sample]``. Use
+        :class:`vista_ocr.data.synth.factory.HandwrittenSynthFactory`.
+    """
+    if pdfa_weight < 0 or idl_weight < 0 or synth_weight < 0:
+        raise ValueError(
+            f"weights must be non-negative; got pdfa={pdfa_weight}, "
+            f"idl={idl_weight}, synth={synth_weight}"
+        )
+    if pdfa_weight + idl_weight + synth_weight <= 0:
+        raise ValueError("at least one source must have positive weight")
+    if idl_weight > 0 and not idl_shards:
+        raise ValueError("idl_weight > 0 but idl_shards is empty/None")
+    if synth_weight > 0 and synth_factory is None:
+        raise ValueError("synth_weight > 0 but synth_factory is None")
+
+    dl_cfg = dl_cfg or DataLoaderConfig()
+    ds = _IterableMixedDataset(
+        pdfa_shards=pdfa_shards,
+        idl_shards=list(idl_shards or []),
+        pdfa_weight=pdfa_weight,
+        idl_weight=idl_weight,
+        tokenizer=tokenizer,
+        pre_cfg=pre_cfg,
+        micro_batch_size=dl_cfg.micro_batch_size,
+        pdfa_cfg_kwargs=pdfa_cfg_kwargs,
+        idl_cfg_kwargs=idl_cfg_kwargs,
+        seed=seed,
+        on_short_shards=on_short_shards,
+        synth_factory=synth_factory,
+        synth_weight=synth_weight,
+    )
+    return DataLoader(
+        ds,
+        batch_size=1,
+        collate_fn=_identity_collate,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor if dl_cfg.num_workers > 0 else None,
+        pin_memory=dl_cfg.pin_memory,
+        persistent_workers=dl_cfg.persistent_workers and dl_cfg.num_workers > 0,
+    )
+
+
 __all__ = [
     "DataLoaderConfig",
     "make_pdfa_dataloader",
     "make_mixed_pdfa_idl_loader",
+    "make_mixed_loader",
 ]

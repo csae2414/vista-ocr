@@ -20,6 +20,17 @@ def build_parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     ap.add_argument("--idl-shards", nargs="+", type=Path, default=None,
                     help="Phase H: mix IDL into the train stream.")
     ap.add_argument("--idl-weight", type=float, default=0.6)
+    ap.add_argument("--synth-handwritten", action="store_true",
+                    help="Phase J: mix license-clean handwritten synth into the train stream.")
+    ap.add_argument("--synth-weight", type=float, default=0.2,
+                    help="Synth fraction when --synth-handwritten is set.")
+    ap.add_argument("--synth-text-corpus-en", nargs="+", type=Path, default=None,
+                    help="Local UTF-8 corpus path(s) for English synth (NEVER downloads).")
+    ap.add_argument("--synth-font-dir", type=Path, default=None,
+                    help="Override packaged handwritten font dir. Bundled fonts are the default.")
+    ap.add_argument("--synth-task", default="ocr_layout", choices=("ocr", "ocr_layout"),
+                    help="Synth-only task tag for the OCR-vs-layout ablation.")
+    ap.add_argument("--synth-language", default="en", choices=("en", "fr"))
     ap.add_argument("--val-shard", required=True, type=Path)
     ap.add_argument("--spm", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
@@ -68,7 +79,7 @@ def run(args: argparse.Namespace) -> int:
     from vista_ocr.data.augment import AugmentConfig
     from vista_ocr.data.dataloader import (
         DataLoaderConfig,
-        make_mixed_pdfa_idl_loader,
+        make_mixed_loader,
         make_pdfa_dataloader,
     )
     from vista_ocr.data.preprocess import PreprocessConfig
@@ -142,15 +153,47 @@ def run(args: argparse.Namespace) -> int:
         micro_batch_size=1, num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
     )
-    if args.idl_shards:
-        idl_w = args.idl_weight
-        pdfa_w = 1.0 - idl_w
-        LOG.info("Phase H: PDFA+IDL mix (%.2f / %.2f)", pdfa_w, idl_w)
-        train_loader = make_mixed_pdfa_idl_loader(
+    synth_factory = None
+    if args.synth_handwritten:
+        from vista_ocr.data.synth.factory import HandwrittenSynthFactory
+        if not args.synth_text_corpus_en:
+            raise SystemExit(
+                "--synth-handwritten set but --synth-text-corpus-en is empty. "
+                "Stage synthetic corpora locally first (no implicit downloads)."
+            )
+        font_paths = None
+        if args.synth_font_dir is not None:
+            font_paths = sorted(args.synth_font_dir.glob("*.ttf"))
+            if not font_paths:
+                raise SystemExit(f"No .ttf files in --synth-font-dir {args.synth_font_dir}")
+        synth_factory = HandwrittenSynthFactory(
+            text_corpus_paths=[Path(p) for p in args.synth_text_corpus_en],
+            language=args.synth_language,
+            font_paths=font_paths,
+            task=args.synth_task,
+            canvas_size=(args.page_h, args.page_w),
+        )
+
+    idl_shards = [str(p) for p in args.idl_shards] if args.idl_shards else None
+    idl_w = args.idl_weight if idl_shards else 0.0
+    synth_w = args.synth_weight if synth_factory is not None else 0.0
+    pdfa_w = 1.0 - idl_w - synth_w
+    if pdfa_w <= 0:
+        raise SystemExit(
+            f"Mix-fraction validation: pdfa_weight={pdfa_w:.3f} (must be > 0). "
+            f"Inputs: idl_weight={idl_w}, synth_weight={synth_w}. "
+            f"Reduce IDL_WEIGHT and/or SYNTH_WEIGHT."
+        )
+
+    if idl_shards or synth_factory is not None:
+        LOG.info("Phase H/J: data mix pdfa=%.2f idl=%.2f synth=%.2f",
+                 pdfa_w, idl_w, synth_w)
+        train_loader = make_mixed_loader(
             pdfa_shards=[str(p) for p in args.train_shards],
-            idl_shards=[str(p) for p in args.idl_shards],
+            idl_shards=idl_shards,
+            synth_factory=synth_factory,
+            pdfa_weight=pdfa_w, idl_weight=idl_w, synth_weight=synth_w,
             tokenizer=tokenizer, pre_cfg=pre_cfg, dl_cfg=dl_cfg,
-            pdfa_weight=pdfa_w, idl_weight=idl_w,
         )
     else:
         train_loader = make_pdfa_dataloader(
