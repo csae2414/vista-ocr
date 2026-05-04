@@ -114,13 +114,31 @@ class Augmenter:
         # Albumentations works on numpy arrays. Grayscale PIL ('L') -> 2D.
         img_np = np.asarray(image.convert("L"), dtype=np.uint8)
         # pascal_voc format = (x1, y1, x2, y2) in pixel space; BBox
-        # exports it directly via to_albumentations.
-        bboxes = [list(BBox.from_xyxy(*ln.bbox).to_albumentations())
-                  for ln in lines]
-        # min_visibility filters out bboxes that go too far out; we keep
-        # the ``line_idx`` so we can pair surviving bboxes back to the
-        # right text strings even when reordered.
-        line_idx = list(range(len(lines)))
+        # exports it directly via to_albumentations. Filter degenerate
+        # boxes here (x1 >= x2 or y1 >= y2). Two upstream paths can
+        # produce them: SROIE annotations with collapsed quads (fixed
+        # in iter_sroie at parse time), and PDFA bboxes that were
+        # non-degenerate at the original DPI but rounded to zero width
+        # / height after ``resize_to_canvas`` shrinks them. Both
+        # crash Albumentations with "x_max <= x_min". The text+bbox
+        # for the dropped line is still passed to the loss path via
+        # the un-augmented Sample; we only skip it on the augment
+        # side. ``line_idx`` is used by the Albumentations pipeline
+        # to track surviving boxes through transforms.
+        bboxes: list[list[float]] = []
+        line_idx: list[int] = []
+        for i, ln in enumerate(lines):
+            x1, y1, x2, y2 = ln.bbox
+            if x2 <= x1 or y2 <= y1:
+                continue
+            bboxes.append(list(BBox.from_xyxy(x1, y1, x2, y2).to_albumentations()))
+            line_idx.append(i)
+
+        if not bboxes:
+            # All boxes degenerate after resize -- skip augmentation
+            # rather than feeding albumentations an empty list (which
+            # is also rejected by some transforms).
+            return image, lines
 
         out = self._pipeline(image=img_np, bboxes=bboxes, line_idx=line_idx)
         new_img = Image.fromarray(out["image"], mode="L")

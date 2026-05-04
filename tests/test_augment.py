@@ -197,3 +197,64 @@ def test_wrapper_filters_degenerate_output():
 
     # Only the non-degenerate line survives.
     assert [ln.text for ln in lines_out] == ["keep"]
+
+
+@pytest.mark.skipif(not _have_alb(), reason="albumentations / cv2 not installed")
+def test_wrapper_filters_degenerate_input_bboxes():
+    """Lines arriving at the augmenter with x1==x2 (or y1==y2) must be
+    dropped at the input boundary, not passed to Albumentations.
+
+    Two upstream paths produce degenerate input boxes:
+
+    * SROIE annotations with collapsed-quad lines (filtered at parse
+      time in iter_sroie since fa81352 -- but the augmenter is the
+      defence-in-depth boundary for any future loader bug).
+    * PDFA bboxes that were non-degenerate at original DPI but
+      rounded to zero width or height after ``resize_to_canvas``
+      shrinks the image. Hit Run C at step 0 on PDFA shard 0042.
+
+    Albumentations rejects zero-width / zero-height bboxes mid-batch
+    with a clear ValueError. A single bad bbox in a worker takes the
+    whole DataLoader down.
+    """
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=2.0,
+        brightness_limit=0.0, contrast_limit=0.0,
+        blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+        p_each=0.0,
+    ))
+
+    img = Image.new("L", (200, 100), 200)
+    # Three lines: two healthy, one zero-width (post-resize PDFA shape).
+    lines = [
+        Line(text="keep1", bbox=(10, 10, 50, 30)),
+        Line(text="degen", bbox=(60, 10, 60, 30)),   # x1 == x2
+        Line(text="keep2", bbox=(70, 10, 110, 30)),
+    ]
+    # Should not raise.
+    out_img, out_lines = aug(img, lines)
+    assert out_img.size == img.size
+    # Augmentation may reorder / drop boxes via min_visibility, so we
+    # don't pin the exact survivors -- the load-bearing assertion is
+    # that the call survives the degenerate input.
+    assert all(ln.bbox[2] > ln.bbox[0] and ln.bbox[3] > ln.bbox[1]
+               for ln in out_lines)
+
+
+@pytest.mark.skipif(not _have_alb(), reason="albumentations / cv2 not installed")
+def test_wrapper_returns_unchanged_when_all_input_bboxes_degenerate():
+    """Edge case: every line collapses post-resize. Albumentations
+    rejects an empty bbox list for some transforms, so the wrapper
+    short-circuits to identity (return input unchanged) rather than
+    invoking the pipeline with no boxes."""
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=2.0, p_each=0.0,
+    ))
+    img = Image.new("L", (200, 100), 200)
+    lines = [
+        Line(text="degen-x", bbox=(60, 10, 60, 30)),
+        Line(text="degen-y", bbox=(10, 50, 50, 50)),
+    ]
+    out_img, out_lines = aug(img, lines)
+    assert out_img is img
+    assert out_lines is lines
