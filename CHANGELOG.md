@@ -4,6 +4,59 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-04 — Phase I: stage 1b (unfrozen OCR-only calibration)
+
+Closes reviewer finding #2 (calibration curriculum collapsed).
+Paper §3.6.1 splits stage 1 into two sub-stages:
+
+* Stage 1a (frozen-decoder text-only) -- our existing `stage1_run.py`.
+* **Stage 1b (this commit)**: unfrozen-all text-only. Decoder warms
+  up to the encoder's features without yet being asked to handle
+  layout. Bridges the curriculum gap between stage 1 (frozen) and
+  stage 2 (unfrozen + multimodal).
+
+Per the second reviewer's note, this stage is NOT gated on Run D's
+results -- it's a curriculum-correctness fix, not a speculative
+optimization. Lands soon after Phase H regardless of measured ROI
+from the data-mix change.
+
+### Added
+
+- `scripts/stage1b_run.py` -- mirrors stage 1 structure with three
+  differences: `freeze_decoder=False`, `lambda_text=1.0` (still
+  text-only; layout is stage 2's job), `--lr` default 5e-5
+  (matching stage 2 -- aggressive 3e-4 would damage the warm
+  start). `--init-from` is REQUIRED.
+- `vista_ocr.entrypoints.stage1b` -- the CLI mirror.
+  ``vista-ocr stage 1b --help`` resolves through the dispatcher.
+- Chain envs: `STAGE1B_STEPS` (default 0 -- skip; legacy chain
+  unchanged. Set to 10000 for paper-faithful curriculum).
+  `STAGE1B_SELECT_ON` (default val_loss; word_f1 climbs slowly when
+  the decoder just unfreezes). `STAGE1B_PATIENCE` (default 15).
+- Stage 2's `--init-from` now points at stage 1b's `ckpt_final.pt`
+  when stage 1b is enabled; falls back to stage 1's when not.
+  WARN logged if either ckpt_final.pt is missing.
+- Auto-cap extends to stage 1b: when EARLY_STOP=1 and STAGE1B_STEPS
+  exceeds the early-stop cap (val_every=500 * (warmup + patience)),
+  the chain caps the value with an AUTO-CAP: log line.
+
+### Tests
+
+5 new (3 stage equivalence for stage1b -- `--help` flag-set,
+TrainConfig snapshot, model state_dict() keys; 2 chain DRY_RUN --
+default skips stage 1b, STAGE1B_STEPS=10000 enables it). All four
+stages now share the same equivalence-test contract; the helper
+load_checkpoint mock keeps the test offline (stage 1b's required
+init-from points at a zero-byte fixture file).
+
+Full suite green (455 passed) + sphinx -W clean.
+
+### Operational note
+
+Run C is still mid-stage-2 on the L40S as of this commit; do NOT
+pull on the L40S until Run C completes. Phase H + I land for Run E
+when stage 1b is enabled via `STAGE1B_STEPS=10000`.
+
 ## 2026-05-04 — Phase H: paper-comparable IDL mix + paper page preset
 
 Closes two of the six paper-divergence findings flagged in the

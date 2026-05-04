@@ -284,3 +284,42 @@ def test_phase_h_missing_idl_shards_fails_loudly():
         "IDL_SHARDS_GLOB": "data/raw/idl/idl-doesnotexist-*.tar",
     })
     assert "no IDL shards matched" in out
+
+
+# ---------- Phase I: stage 1b ----------------------------------------
+
+
+def test_phase_i_default_skips_stage_1b():
+    """STAGE1B_STEPS=0 (default) keeps the legacy stage1 -> stage2
+    chain. Stage 1b is NOT invoked."""
+    out = _run_dry({"DATA_MIX": "pdfa"})
+    assert "DRY_RUN [stage1b]:" not in out, (
+        "default STAGE1B_STEPS=0 must skip stage 1b"
+    )
+    # Stage 2 still inits from stage 1's ckpt_final.pt.
+    s2 = re.search(r"^DRY_RUN \[stage2\]: (.+)$", out, re.MULTILINE)
+    assert s2
+    assert "checkpoints/stage1/ckpt_final.pt" in s2.group(1)
+
+
+def test_phase_i_stage1b_runs_when_enabled():
+    """STAGE1B_STEPS=10000 enables the new stage between 1 and 2.
+    Stage 1b's arglist carries the right per-stage settings; stage 2's
+    --init-from points at stage1b/ckpt_final.pt instead of stage1's."""
+    out = _run_dry({"STAGE1B_STEPS": "10000"})
+
+    s1b = re.search(r"^DRY_RUN \[stage1b\]: (.+)$", out, re.MULTILINE)
+    assert s1b, f"stage 1b DRY_RUN line missing in:\n{out}"
+    s1b_args = s1b.group(1)
+    assert "--steps 10000" in s1b_args
+    assert "--init-from checkpoints/stage1/ckpt_final.pt" in s1b_args
+    # Stage 1b defaults: select_on=val_loss (decoder just unfrozen,
+    # word_f1 climbs slowly); patience 15.
+    assert "--select-on val_loss" in s1b_args
+    assert "--early-stop-patience 15" in s1b_args
+
+    # Stage 2 now inits from stage 1b's output, not stage 1's.
+    s2 = re.search(r"^DRY_RUN \[stage2\]: (.+)$", out, re.MULTILINE)
+    assert s2
+    assert "checkpoints/stage1b/ckpt_final.pt" in s2.group(1)
+    assert "checkpoints/stage1/ckpt_final.pt" not in s2.group(1)

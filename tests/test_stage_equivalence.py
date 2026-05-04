@@ -39,14 +39,16 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT_PATHS = {
-    "stage1": REPO / "scripts" / "stage1_run.py",
-    "stage2": REPO / "scripts" / "stage2_run.py",
-    "stage3": REPO / "scripts" / "stage3_run.py",
+    "stage1":  REPO / "scripts" / "stage1_run.py",
+    "stage1b": REPO / "scripts" / "stage1b_run.py",
+    "stage2":  REPO / "scripts" / "stage2_run.py",
+    "stage3":  REPO / "scripts" / "stage3_run.py",
 }
 ENTRY_MODULES = {
-    "stage1": "vista_ocr.entrypoints.stage1",
-    "stage2": "vista_ocr.entrypoints.stage2",
-    "stage3": "vista_ocr.entrypoints.stage3",
+    "stage1":  "vista_ocr.entrypoints.stage1",
+    "stage1b": "vista_ocr.entrypoints.stage1b",
+    "stage2":  "vista_ocr.entrypoints.stage2",
+    "stage3":  "vista_ocr.entrypoints.stage3",
 }
 
 
@@ -91,10 +93,17 @@ def equiv_env(tmp_path_factory):
         with tarfile.open(p, "w") as tf:
             pass
 
+    # Empty placeholder for stage 1b's --init-from. The test's mock
+    # of load_checkpoint makes the file content irrelevant; only the
+    # ``path.exists()`` guard cares.
+    fake_ckpt = base / "fake_ckpt.pt"
+    fake_ckpt.write_bytes(b"")
+
     return {
         "spm": spm_path,
         "train_shard": train_shard,
         "val_shard": val_shard,
+        "fake_ckpt": fake_ckpt,
         "out": base,
     }
 
@@ -115,6 +124,11 @@ def _common_args(env: dict, stage: str) -> list[str]:
     if stage == "stage1":
         # --init-decoder-from random keeps the test offline.
         args += ["--init-decoder-from", "random"]
+    if stage == "stage1b":
+        # Stage 1b requires --init-from. The fixture's fake_ckpt is a
+        # zero-byte file -- the test's load_checkpoint mock makes it a
+        # no-op, so the file just needs to exist for the path check.
+        args += ["--init-from", str(env["fake_ckpt"])]
     return args
 
 
@@ -142,6 +156,17 @@ def _capture_via_module(module_path: str, argv: list[str]) -> dict:
         if False:
             yield None  # generator
 
+    def fake_load_checkpoint(*args, **kwargs):
+        # Stage 1b/2/3's --init-from path. The fixture's fake_ckpt.pt
+        # is a zero-byte file; without this mock, load_checkpoint
+        # would torch.load the empty file and crash.
+        from vista_ocr.training.callbacks import CheckpointPayload
+        return CheckpointPayload(
+            step=0, model_state={}, optimizer_state={},
+            rng_state_cpu=None, rng_state_cuda=[],
+            best_val_loss=float("inf"), extra={},
+        )
+
     # The model is created on .cuda() for stage 2/3; redirect to CPU.
     import torch
     real_to = torch.nn.Module.to
@@ -159,6 +184,7 @@ def _capture_via_module(module_path: str, argv: list[str]) -> dict:
     with patch("vista_ocr.training.train_loop.train", fake_train), \
          patch("vista_ocr.data.dataloader.make_pdfa_dataloader", fake_loader), \
          patch("vista_ocr.data.pdfa.iter_pdfa", fake_iter_pdfa), \
+         patch("vista_ocr.training.callbacks.load_checkpoint", fake_load_checkpoint), \
          patch.object(torch.nn.Module, "cuda", fake_cuda), \
          patch.object(torch.nn.Module, "to", fake_to):
         try:
@@ -198,6 +224,14 @@ def _capture_via_script(script: Path, argv: list[str]) -> dict:
         if False:
             yield None
 
+    def fake_load_checkpoint(*args, **kwargs):
+        from vista_ocr.training.callbacks import CheckpointPayload
+        return CheckpointPayload(
+            step=0, model_state={}, optimizer_state={},
+            rng_state_cpu=None, rng_state_cuda=[],
+            best_val_loss=float("inf"), extra={},
+        )
+
     import torch
     real_to = torch.nn.Module.to
 
@@ -214,6 +248,7 @@ def _capture_via_script(script: Path, argv: list[str]) -> dict:
          patch("vista_ocr.training.train_loop.train", fake_train), \
          patch("vista_ocr.data.dataloader.make_pdfa_dataloader", fake_loader), \
          patch("vista_ocr.data.pdfa.iter_pdfa", fake_iter_pdfa), \
+         patch("vista_ocr.training.callbacks.load_checkpoint", fake_load_checkpoint), \
          patch.object(torch.nn.Module, "cuda", fake_cuda), \
          patch.object(torch.nn.Module, "to", fake_to):
         try:
@@ -250,7 +285,7 @@ def _flag_set_from_help(help_text: str) -> set[str]:
     return flags
 
 
-@pytest.mark.parametrize("stage", ["stage1", "stage2", "stage3"])
+@pytest.mark.parametrize("stage", ["stage1", "stage1b", "stage2", "stage3"])
 def test_flag_set_equivalence(stage: str):
     """Both the legacy script and the entrypoint declare the same
     long-form ``--flag`` set. Catches forgotten flag mirrors."""
@@ -291,7 +326,7 @@ def _normalize_cfg(cfg) -> dict:
     return d
 
 
-@pytest.mark.parametrize("stage", ["stage1", "stage2", "stage3"])
+@pytest.mark.parametrize("stage", ["stage1", "stage1b", "stage2", "stage3"])
 def test_trainconfig_snapshot_equivalence(stage: str, equiv_env):
     argv = _common_args(equiv_env, stage)
     legacy = _capture_via_script(SCRIPT_PATHS[stage], argv)
@@ -311,7 +346,7 @@ def test_trainconfig_snapshot_equivalence(stage: str, equiv_env):
 # ---------------- Equivalence test 3: model state_dict() keys ------------
 
 
-@pytest.mark.parametrize("stage", ["stage1", "stage2", "stage3"])
+@pytest.mark.parametrize("stage", ["stage1", "stage1b", "stage2", "stage3"])
 def test_model_state_dict_keys_equivalence(stage: str, equiv_env):
     argv = _common_args(equiv_env, stage)
     legacy = _capture_via_script(SCRIPT_PATHS[stage], argv)

@@ -15,6 +15,10 @@
 #   AUGMENT             default 1       (set 0 to disable B2 augment)
 #   PAGE_PRESET         default medium  ('large' = 1400x1050, 48 GB+ cards)
 #   STAGE1_STEPS        default 20000
+#   STAGE1B_STEPS       default 0      (0 = skip stage 1b, legacy chain;
+#                                      paper §3.6.1 unfrozen OCR-only
+#                                      transition stage; recommend 10000
+#                                      for paper-faithful curriculum)
 #   STAGE2_STEPS        default 80000
 #   STAGE3_STEPS        default 70000
 #   SDPA                default 0       (1=enable C3 monkey-patch; ~10x
@@ -89,6 +93,11 @@ INIT_DECODER_FROM="${INIT_DECODER_FROM:-donut}"
 GRAD_ACCUM_STEPS="${GRAD_ACCUM_STEPS:-8}"
 AUGMENT="${AUGMENT:-1}"
 STAGE1_STEPS="${STAGE1_STEPS:-20000}"
+# Phase I: stage 1b (unfrozen OCR-only) bridges stage 1 (frozen) and
+# stage 2 (multimodal). Default 0 keeps the legacy 1->2 chain so
+# pre-Phase-I scripts behave unchanged. Set STAGE1B_STEPS=10000 to
+# enable the paper-§3.6.1 curriculum.
+STAGE1B_STEPS="${STAGE1B_STEPS:-0}"
 STAGE2_STEPS="${STAGE2_STEPS:-80000}"
 STAGE3_STEPS="${STAGE3_STEPS:-70000}"
 PAGE_PRESET="${PAGE_PRESET:-medium}"
@@ -104,6 +113,10 @@ DECODE_N_BEST="${DECODE_N_BEST:-256}"
 # is structurally 0 and would trip premature early-stop. val_loss is
 # the only metric that moves in stage 1.
 STAGE1_SELECT_ON="${STAGE1_SELECT_ON:-val_loss}"
+# Stage 1b: decoder unfrozen but starting from the stage-1 frozen-
+# decoder warm start. word_f1 starts at 0 and climbs slowly; val_loss
+# is the more responsive signal during this short transition stage.
+STAGE1B_SELECT_ON="${STAGE1B_SELECT_ON:-val_loss}"
 STAGE2_SELECT_ON="${STAGE2_SELECT_ON:-val_word_f1}"
 STAGE3_SELECT_ON="${STAGE3_SELECT_ON:-val_word_f1}"
 
@@ -113,12 +126,14 @@ STAGE3_SELECT_ON="${STAGE3_SELECT_ON:-val_word_f1}"
 # which climbs smoothly when the decoder is unfrozen, so 10/15 is
 # plenty.
 STAGE1_PATIENCE="${STAGE1_PATIENCE:-40}"
+STAGE1B_PATIENCE="${STAGE1B_PATIENCE:-15}"
 STAGE2_PATIENCE="${STAGE2_PATIENCE:-10}"
 STAGE3_PATIENCE="${STAGE3_PATIENCE:-15}"
 
 # Legacy whole-chain override.
 if [[ -n "${SELECT_ON:-}" ]]; then
   STAGE1_SELECT_ON="$SELECT_ON"
+  STAGE1B_SELECT_ON="$SELECT_ON"
   STAGE2_SELECT_ON="$SELECT_ON"
   STAGE3_SELECT_ON="$SELECT_ON"
 fi
@@ -205,11 +220,16 @@ mkdir -p logs checkpoints
 WARMUP_VALS=5
 if [[ "$EARLY_STOP" == "1" ]]; then
   s1_cap=$((500 * (WARMUP_VALS + STAGE1_PATIENCE)))
+  s1b_cap=$((500 * (WARMUP_VALS + STAGE1B_PATIENCE)))
   s2_cap=$((2000 * (WARMUP_VALS + STAGE2_PATIENCE)))
   s3_cap=$((2000 * (WARMUP_VALS + STAGE3_PATIENCE)))
   if (( STAGE1_STEPS > s1_cap )); then
     echo "AUTO-CAP: STAGE1_STEPS=$STAGE1_STEPS exceeds early-stop cap $s1_cap (val_every=500 * (warmup=$WARMUP_VALS + patience=$STAGE1_PATIENCE)); capping."
     STAGE1_STEPS=$s1_cap
+  fi
+  if (( STAGE1B_STEPS > 0 && STAGE1B_STEPS > s1b_cap )); then
+    echo "AUTO-CAP: STAGE1B_STEPS=$STAGE1B_STEPS exceeds early-stop cap $s1b_cap; capping."
+    STAGE1B_STEPS=$s1b_cap
   fi
   if (( STAGE2_STEPS > s2_cap )); then
     echo "AUTO-CAP: STAGE2_STEPS=$STAGE2_STEPS exceeds early-stop cap $s2_cap; capping."
@@ -239,7 +259,11 @@ echo "  init_decoder_from: $INIT_DECODER_FROM"
 echo "  grad_accum_steps : $GRAD_ACCUM_STEPS"
 echo "  augment          : $AUGMENT"
 echo "  page_preset      : $PAGE_PRESET"
-echo "  steps            : ${STAGE1_STEPS} / ${STAGE2_STEPS} / ${STAGE3_STEPS}"
+if (( STAGE1B_STEPS > 0 )); then
+  echo "  steps            : 1=${STAGE1_STEPS} 1b=${STAGE1B_STEPS} 2=${STAGE2_STEPS} 3=${STAGE3_STEPS}"
+else
+  echo "  steps            : ${STAGE1_STEPS} / ${STAGE2_STEPS} / ${STAGE3_STEPS} (stage 1b skipped)"
+fi
 echo "  sdpa             : $SDPA"
 echo "  grad_ckpt        : $GRAD_CKPT"
 echo "  num_workers      : $NUM_WORKERS"
@@ -283,13 +307,46 @@ _print_or_run stage1 python scripts/stage1_run.py \
   "${SPEED_FLAGS[@]}" \
   "${ES_FLAGS[@]}"
 
-# Stage 2 init source: prefer ckpt_final.pt; fall back to ckpt_best.pt.
-# The fallback decision lands here (after stage 1 has run) so that the
-# operator sees the file-not-found warning at the moment it matters.
+# Stage 2 init source: prefer stage 1's ckpt_final.pt; fall back to
+# ckpt_best.pt. The fallback decision lands here (after stage 1 has
+# run) so the operator sees the file-not-found warning at the moment
+# it matters.
 STAGE1_INIT_CKPT="$STAGE1_INIT_CKPT_DEFAULT"
 if [[ "$DRY_RUN" != "1" && ! -f "$STAGE1_INIT_CKPT_DEFAULT" ]]; then
   echo "WARN: $STAGE1_INIT_CKPT_DEFAULT missing; falling back to $STAGE1_INIT_CKPT_FALLBACK"
   STAGE1_INIT_CKPT="$STAGE1_INIT_CKPT_FALLBACK"
+fi
+
+# Phase I: optional stage 1b between stage 1 and stage 2. Default
+# STAGE1B_STEPS=0 keeps the legacy 1->2 chain. When enabled, stage 2
+# inits from stage1b/ckpt_final.pt instead of stage1/ckpt_final.pt.
+STAGE2_INIT_CKPT="$STAGE1_INIT_CKPT"
+if (( STAGE1B_STEPS > 0 )); then
+  echo
+  echo "=== $(date -Is)  STAGE 1b: unfrozen OCR-only (${STAGE1B_STEPS} steps) ==="
+  _print_or_run stage1b python scripts/stage1b_run.py \
+    --train-shards "${TRAIN_SHARDS[@]}" \
+    --val-shard "$VAL" --spm "$SPM" \
+    --out checkpoints/stage1b \
+    --init-from "$STAGE1_INIT_CKPT" \
+    --steps "$STAGE1B_STEPS" --val-every 500 --ckpt-every 500 \
+    --grad-accum-steps "$GRAD_ACCUM_STEPS" \
+    --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
+    --decode-n-best "$DECODE_N_BEST" --select-on "$STAGE1B_SELECT_ON" \
+    --early-stop-patience "$STAGE1B_PATIENCE" \
+    --page-preset "$PAGE_PRESET" \
+    "${AUG_FLAG[@]}" \
+    "${SPEED_FLAGS[@]}" \
+    "${ES_FLAGS[@]}" \
+    "${IDL_FLAGS[@]}"
+
+  STAGE1B_INIT_CKPT_DEFAULT="checkpoints/stage1b/ckpt_final.pt"
+  STAGE1B_INIT_CKPT_FALLBACK="checkpoints/stage1b/ckpt_best.pt"
+  STAGE2_INIT_CKPT="$STAGE1B_INIT_CKPT_DEFAULT"
+  if [[ "$DRY_RUN" != "1" && ! -f "$STAGE1B_INIT_CKPT_DEFAULT" ]]; then
+    echo "WARN: $STAGE1B_INIT_CKPT_DEFAULT missing; falling back to $STAGE1B_INIT_CKPT_FALLBACK"
+    STAGE2_INIT_CKPT="$STAGE1B_INIT_CKPT_FALLBACK"
+  fi
 fi
 
 echo
@@ -298,7 +355,7 @@ _print_or_run stage2 python scripts/stage2_run.py \
   --train-shards "${TRAIN_SHARDS[@]}" \
   --val-shard "$VAL" --spm "$SPM" \
   --out checkpoints/stage2 \
-  --init-from "$STAGE1_INIT_CKPT" \
+  --init-from "$STAGE2_INIT_CKPT" \
   --steps "$STAGE2_STEPS" --val-every 2000 --ckpt-every 2000 \
   --grad-accum-steps "$GRAD_ACCUM_STEPS" \
   --num-workers "$NUM_WORKERS" --prefetch-factor "$PREFETCH_FACTOR" \
