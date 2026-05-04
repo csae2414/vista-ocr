@@ -44,6 +44,9 @@ vista-ocr = "vista_ocr.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"vista_ocr.data.synth.fonts.handwritten" = ["*.ttf", "*.LICENSE.txt", "*.json", "*.md"]
+
 [tool.ruff]
 line-length = 110
 target-version = "py311"

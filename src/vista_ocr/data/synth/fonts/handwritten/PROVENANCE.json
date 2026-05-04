@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "comment": "Per-font provenance + license binding. The handwritten generator's license-audit test parses this file and verifies (a) every .ttf in the directory has an entry, (b) the SHA256 matches on-disk, (c) the listed .LICENSE.txt exists. Fill in entries when fonts are bundled.",
+  "fonts": []
+}
