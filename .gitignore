@@ -50,3 +50,15 @@ IMPROVEMENTS.md
 notes/
 PLAN.md
 PLAN_*.md
+
+# AI-assistant memory / config files. These hold operator-specific
+# context (preferences, conventions, transient state) and should not
+# travel with the repo.
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.windsurfrules
+.aider*
