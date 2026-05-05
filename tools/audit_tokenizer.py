@@ -32,31 +32,13 @@ may be omitted; the corpus is skipped if absent.
 from __future__ import annotations
 
 import argparse
-import glob
 import itertools
-import re
 import statistics
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-_BRACE_RANGE_RE = re.compile(r"\{(\d+)\.\.(\d+)\}")
-
-
-def _expand_shards(pattern: str) -> list[str]:
-    """Bash-style brace-range glob expansion (mirrors
-    tools/synth_target_distributions.py)."""
-    m = _BRACE_RANGE_RE.search(pattern)
-    if m is None:
-        return sorted(glob.glob(pattern))
-    start_s, stop_s = m.group(1), m.group(2)
-    width = max(len(start_s), len(stop_s))
-    lo, hi = sorted([int(start_s), int(stop_s)])
-    out: list[str] = []
-    for i in range(lo, hi + 1):
-        literal = pattern[: m.start()] + str(i).zfill(width) + pattern[m.end():]
-        out.extend(glob.glob(literal))
-    return sorted(out)
+from vista_ocr.utils.shard_glob import expand_shards
 
 
 def _percentiles(xs: list[float], qs: tuple[int, ...] = (50, 90, 95, 99)) -> dict[str, float]:
@@ -206,7 +188,7 @@ def _resolve_locked_pdfa_shards(pattern: str) -> list[str]:
     """PDFA train/val/test split is locked at 0118/0119; refuse those
     in audit input mirroring tools/synth_target_distributions.py."""
     from vista_ocr.data.split import TEST_SHARD_BASENAME, VAL_SHARD_BASENAME
-    paths = _expand_shards(pattern)
+    paths = expand_shards(pattern)
     locked = {VAL_SHARD_BASENAME, TEST_SHARD_BASENAME}
     return [p for p in paths if Path(p).name not in locked]
 
@@ -251,7 +233,7 @@ def main() -> int:
             page_rows.append(("pdfa", _audit_pages_truncation(sp, page_iter, args.n_per_corpus, args.max_target_tokens)))
 
     if args.idl_shards:
-        shards = _expand_shards(args.idl_shards)
+        shards = expand_shards(args.idl_shards)
         if shards:
             print(f"IDL: {len(shards)} shards", file=sys.stderr)
             line_iter, page_iter = _iter_idl_lines(shards, args.n_per_corpus)

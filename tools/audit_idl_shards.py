@@ -18,6 +18,11 @@ shard and reports:
 Threshold: any shard with ``decode_ok < 0.9`` is flagged red --
 that shard would silently distort a long training run if mixed in.
 
+``--shards`` accepts plain globs (``idl-train-*.tar``) or
+bash-style brace ranges (``idl-train-{00000..00011}.tar``); the
+helper :func:`vista_ocr.utils.shard_glob.expand_shards` handles
+both shapes.
+
 Usage::
 
     python tools/audit_idl_shards.py \\
@@ -28,15 +33,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import glob
 import itertools
 import statistics
 import sys
 from pathlib import Path
 
-
-def _expand_shards(pattern: str) -> list[str]:
-    return sorted(glob.glob(pattern))
+from vista_ocr.utils.shard_glob import expand_shards
 
 
 def _audit_one_shard(shard_path: str, n_records: int) -> dict:
@@ -141,7 +143,7 @@ def main() -> int:
     p.add_argument("--decode-ok-threshold", type=float, default=0.9)
     args = p.parse_args()
 
-    shards = _expand_shards(args.shards)
+    shards = expand_shards(args.shards)
     if not shards:
         print(f"no shards matched: {args.shards}", file=sys.stderr)
         return 1

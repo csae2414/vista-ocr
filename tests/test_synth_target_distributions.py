@@ -7,7 +7,11 @@ Inventory (notes/plan_phase_j_followup.md §Fix 3):
   emits the schema we expect from in-memory Sample fakes.
 - ``test_idl_path_calls_iter_idl_with_config`` -- mirror.
 - ``test_brace_expansion_resolves_pattern`` -- direct unit test
-  of _expand_shards on a tmp dir with three matching files.
+  of ``vista_ocr.utils.shard_glob.expand_shards`` on a tmp dir
+  with three matching files. (The shared helper has its own
+  dedicated suite at ``tests/test_shard_glob.py``; this test
+  remains as a tool-level integration check that the tool still
+  reaches the helper after a future refactor.)
 - ``test_locked_val_test_shards_rejected`` -- the val/test reject
   step refuses to proceed when 0118 / 0119 are in the glob match.
 
@@ -31,6 +35,7 @@ from vista_ocr.data.pdfa import PdfaConfig
 from vista_ocr.data.idl import IdlConfig
 from vista_ocr.data.types import Sample
 from vista_ocr.tokenizer.tokenizer import Line
+from vista_ocr.utils.shard_glob import expand_shards
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -65,31 +70,33 @@ def _fake_samples(n: int = 3):
 # brace expansion
 # ---------------------------------------------------------------------------
 
-def test_brace_expansion_resolves_pattern(tool, tmp_path: Path):
+def test_brace_expansion_resolves_pattern(tmp_path: Path):
     """Single-range brace pattern must expand to all matching files,
-    sorted, when those files exist on disk."""
+    sorted, when those files exist on disk. The shared helper has
+    its own dedicated suite at ``tests/test_shard_glob.py``; this
+    test stays as a tool-level integration check."""
     for i in (1, 2, 3):
         (tmp_path / f"x-{i:04d}.tar").write_bytes(b"")
     pattern = str(tmp_path / "x-{0001..0003}.tar")
-    out = tool._expand_shards(pattern)
+    out = expand_shards(pattern)
     assert [Path(p).name for p in out] == ["x-0001.tar", "x-0002.tar", "x-0003.tar"]
 
 
-def test_brace_expansion_matches_only_existing_files(tool, tmp_path: Path):
+def test_brace_expansion_matches_only_existing_files(tmp_path: Path):
     """The pattern's range exceeds what's on disk; expander must
     silently drop missing files, not raise."""
     (tmp_path / "x-0001.tar").write_bytes(b"")
     (tmp_path / "x-0003.tar").write_bytes(b"")
     pattern = str(tmp_path / "x-{0001..0005}.tar")
-    out = tool._expand_shards(pattern)
+    out = expand_shards(pattern)
     assert [Path(p).name for p in out] == ["x-0001.tar", "x-0003.tar"]
 
 
-def test_plain_glob_still_works(tool, tmp_path: Path):
-    """No brace range → falls back to plain glob.glob()."""
+def test_plain_glob_still_works(tmp_path: Path):
+    """No brace range -> falls back to plain glob.glob()."""
     (tmp_path / "x-0001.tar").write_bytes(b"")
     (tmp_path / "x-0002.tar").write_bytes(b"")
-    out = tool._expand_shards(str(tmp_path / "x-*.tar"))
+    out = expand_shards(str(tmp_path / "x-*.tar"))
     assert [Path(p).name for p in out] == ["x-0001.tar", "x-0002.tar"]
 
 
@@ -109,7 +116,7 @@ def test_locked_val_test_shards_rejected(tool, tmp_path: Path):
     ):
         (tmp_path / name).write_bytes(b"")
     pattern = str(tmp_path / "pdfa-eng-train-*.tar")
-    paths = tool._expand_shards(pattern)
+    paths = expand_shards(pattern)
     with pytest.raises(SystemExit) as exc:
         tool._reject_locked_shards(paths)
     msg = str(exc.value)
@@ -123,7 +130,7 @@ def test_no_locked_shards_passes_through(tool, tmp_path: Path):
     unchanged (does not raise)."""
     (tmp_path / "pdfa-eng-train-0001.tar").write_bytes(b"")
     (tmp_path / "pdfa-eng-train-0002.tar").write_bytes(b"")
-    paths = tool._expand_shards(str(tmp_path / "pdfa-eng-train-*.tar"))
+    paths = expand_shards(str(tmp_path / "pdfa-eng-train-*.tar"))
     out = tool._reject_locked_shards(paths)
     assert [Path(p).name for p in out] == [
         "pdfa-eng-train-0001.tar", "pdfa-eng-train-0002.tar",

@@ -33,15 +33,14 @@ silently filtering, so an operator who passes
 from __future__ import annotations
 
 import argparse
-import glob
 import json
-import re
 import statistics
 import sys
 from pathlib import Path
 from typing import Any
 
 from vista_ocr.data.split import TEST_SHARD_BASENAME, VAL_SHARD_BASENAME
+from vista_ocr.utils.shard_glob import expand_shards
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,34 +58,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", type=Path, required=True,
                    help="Path to write the JSON report.")
     return p.parse_args()
-
-
-_BRACE_RANGE_RE = re.compile(r"\{(\d+)\.\.(\d+)\}")
-
-
-def _expand_shards(pattern: str) -> list[str]:
-    """Expand a bash-style brace-range glob to sorted matching files.
-
-    Recognises a single ``{start..stop}`` numeric range (zero-padded
-    width preserved from the longer of the two endpoints) and expands
-    it to a list of literal globs, then ``glob.glob()``s each. The
-    range is inclusive on both ends.
-
-    Multi-range patterns are not supported; the tool's only known
-    callers use a single range.
-    """
-    m = _BRACE_RANGE_RE.search(pattern)
-    if m is None:
-        return sorted(glob.glob(pattern))
-    start_s, stop_s = m.group(1), m.group(2)
-    width = max(len(start_s), len(stop_s))
-    start, stop = int(start_s), int(stop_s)
-    lo, hi = (start, stop) if start <= stop else (stop, start)
-    out: list[str] = []
-    for i in range(lo, hi + 1):
-        literal = pattern[: m.start()] + str(i).zfill(width) + pattern[m.end():]
-        out.extend(glob.glob(literal))
-    return sorted(out)
 
 
 def _reject_locked_shards(paths: list[str]) -> list[str]:
@@ -127,7 +98,7 @@ def _build_iter(args: argparse.Namespace):
         from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
         if not args.shards:
             raise SystemExit("--shards required for pdfa")
-        shards = _reject_locked_shards(_expand_shards(args.shards))
+        shards = _reject_locked_shards(expand_shards(args.shards))
         if not shards:
             raise SystemExit(f"--shards matched 0 files: {args.shards!r}")
         return iter_pdfa(PdfaConfig(shards=shards))
@@ -135,7 +106,7 @@ def _build_iter(args: argparse.Namespace):
         from vista_ocr.data.idl import IdlConfig, iter_idl
         if not args.shards:
             raise SystemExit("--shards required for idl")
-        shards = _expand_shards(args.shards)
+        shards = expand_shards(args.shards)
         if not shards:
             raise SystemExit(f"--shards matched 0 files: {args.shards!r}")
         return iter_idl(IdlConfig(shards=shards))
