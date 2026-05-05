@@ -162,6 +162,58 @@ def test_wrapper_preserves_text_idx_pairing_under_rotation():
         assert abs(dy - ey) < 5, f"{src.text}: cy_diff={dy - ey:.2f}"
 
 
+def test_wrapper_handles_bbox_label_field_drift(caplog):
+    """Albumentations 1.4.15 has a rare drift bug where
+    ``min_visibility`` filtering produces ``len(line_idx) > len(bboxes)``
+    in the pipeline output. Hit by Run D 2026-05-05 at stage-2 step
+    ~11000, supervisor-restart-looped until this loosened to
+    ``strict=False``.
+
+    The wrapper must:
+      1. NOT raise ValueError("zip() argument 2 is longer than argument 1").
+      2. Pair the shorter prefix (Albumentations preserves order through
+         the pipeline so the surviving bboxes still align with the first
+         N line_idxs).
+      3. Log a WARNING so the operator notices the drift rate is real.
+    """
+    import logging
+    aug = Augmenter(AugmentConfig(
+        enabled=True, rotate_deg=2.0,
+        brightness_limit=0.0, contrast_limit=0.0,
+        blur_max_sigma=0.0, jpeg_quality_min=95, jpeg_quality_max=95,
+        p_each=0.0,
+    ))
+    img = Image.new("L", (200, 100), 200)
+    real_pipeline = aug._pipeline
+
+    def drift_pipeline(*, image, bboxes, line_idx):
+        # Simulate Albumentations dropping one bbox via min_visibility
+        # but failing to drop the corresponding label_field entry.
+        return {
+            "image": image,
+            "bboxes": [(10.0, 10.0, 50.0, 30.0)],
+            "line_idx": [0, 1],   # one extra, the bug
+        }
+
+    aug._pipeline = drift_pipeline  # type: ignore[assignment]
+    try:
+        with caplog.at_level(logging.WARNING, logger="vista_ocr.data.augment"):
+            _, lines_out = aug(img, [
+                Line(text="keep", bbox=(10, 10, 50, 30)),
+                Line(text="drop_drifted", bbox=(60, 10, 70, 30)),
+            ])
+    finally:
+        aug._pipeline = real_pipeline
+
+    # The surviving bbox is paired with line_idx[0] -> "keep".
+    assert [ln.text for ln in lines_out] == ["keep"]
+    # Drift is logged so it doesn't pass silently.
+    assert any(
+        "length drift" in rec.message and "bboxes=1" in rec.message
+        for rec in caplog.records
+    )
+
+
 def test_wrapper_filters_degenerate_output():
     """If BBox.from_albumentations clamps a tiny inversion to
     degenerate, the wrapper must filter it via is_degenerate() rather

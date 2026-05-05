@@ -143,8 +143,24 @@ class Augmenter:
         out = self._pipeline(image=img_np, bboxes=bboxes, line_idx=line_idx)
         new_img = Image.fromarray(out["image"], mode="L")
 
+        # Albumentations 1.4.15 has a rare drift bug where label_fields
+        # and bboxes diverge in length under min_visibility filtering --
+        # extra line_idx entries appear after some pipelines drop a
+        # bbox without dropping its label. Hit by Run D 2026-05-05 at
+        # step ~11000; supervisor restart-looped until this loosened
+        # to strict=False. The shorter list is the truth (Albumentations
+        # preserves order across the pipeline); zip stops there. Warn
+        # once per call when misalignment is observed.
+        out_bboxes = out["bboxes"]
+        out_line_idx = out["line_idx"]
+        if len(out_bboxes) != len(out_line_idx):
+            LOG.warning(
+                "Augmenter: bbox/line_idx length drift "
+                "(bboxes=%d, line_idx=%d) -- pairing the shorter prefix",
+                len(out_bboxes), len(out_line_idx),
+            )
         new_lines: list[Line] = []
-        for bbox, idx in zip(out["bboxes"], out["line_idx"], strict=True):
+        for bbox, idx in zip(out_bboxes, out_line_idx, strict=False):
             bb = BBox.from_albumentations(*bbox)
             if bb.is_degenerate():
                 continue
