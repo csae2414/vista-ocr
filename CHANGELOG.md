@@ -4,6 +4,59 @@ User-visible changes per dated entry. Code-internal refactors that
 don't affect operators or downstream evaluations are out of scope and
 live in commit messages.
 
+## 2026-05-05 — Bug fix: `iter_idl` now reads the real on-disk schema
+
+`DATA_MIX=pdfa+idl` is functional again. The previous loader looked
+for `record["png"|"jpg"|"jpeg"]` and a payload of
+`{"blocks": [...]}` / `{"lines": [...]}` with per-block
+`{text, bbox}`. The actual `pixparse/idl-wds` shards in
+`data/raw/idl/idl-train-*.tar` ship `pdf` + `tif` + `json` + `ocr`
+per record with `{"pages": [{"text": [...], "bbox": [...],
+"poly": [...], "score": [...]}]}` — parallel arrays at the page
+top level, normalised xywh bboxes. Every record returned `None`,
+`iter_idl` yielded zero samples, and stage 2 of any pdfa+idl run
+crashed at WebDataset's `check_empty` boundary. Run D's first
+stage-2 launch hit this on 2026-05-05 06:13.
+
+### Fixed
+
+- Record decode now reads `record["pdf"]` and rasterises via
+  pypdfium2 (importing `_render_pdf_page` and
+  `_norm_bbox_to_pixels` from `vista_ocr.data.pdfa`).
+- JSON parsing handles the actual page-top-level parallel-arrays
+  shape (`page["text"]`, `page["bbox"]`, `page["score"]`).
+- `iter_idl` now uses `empty_check=False` (matches
+  `iter_pdfa`) and wraps each record in `try/except` with a
+  WARNING — one malformed record cannot abort a multi-day chain.
+- `IdlConfig` gains `dpi=200` / `min_line_score=0.5` /
+  `flatten_multi_page=True`. Defaults pinned equal to
+  `PdfaConfig`'s by `test_idl_config_defaults_mirror_pdfa_config`.
+
+### Operator pre-flight
+
+Before launching with `DATA_MIX=pdfa+idl`, sanity-check that
+`iter_idl` produces samples:
+
+```bash
+python -c "
+from vista_ocr.data.idl import IdlConfig, iter_idl
+import itertools
+shard = 'data/raw/idl/idl-train-00000.tar'
+n = sum(1 for _ in itertools.islice(iter_idl(IdlConfig(shards=[shard])), 200))
+print(f'{n} samples (pre-fix: 0; post-fix: 200)')
+"
+```
+
+Pre-fix output: `0 samples`. Post-fix expected: `200 samples`.
+
+### Tests
+
+11 in `tests/test_idl_loader.py`: 10 unit tests
+(monkeypatch `_render_pdf_page` for determinism + speed across
+pypdfium versions) + 1 gated real-shard smoke that asserts ≥ 10
+samples come out of `data/raw/idl/idl-train-00000.tar`. Verified
+on the L40S with the operator-pre-flight smoke (200/200).
+
 ## 2026-05-04 — Phase J followup (four pre-A/B fixes)
 
 Closes four gaps surfaced after the J0+J1a+J2+J3 drop and before

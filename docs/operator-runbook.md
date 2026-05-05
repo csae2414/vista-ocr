@@ -119,6 +119,26 @@ SYNTH_WEIGHT=0.2 \
 The chain hard-fails if `IDL_WEIGHT + SYNTH_WEIGHT >= 1.0` (which
 would yield `pdfa_frac <= 0`). Reduce one of the two.
 
+#### IDL pre-flight (when `DATA_MIX` includes `idl`)
+
+Before launching with `pdfa+idl` or `pdfa+idl+synth`, sanity-check
+that `iter_idl` actually produces samples for your local IDL
+shards. This was the bug that crashed Run D's first stage 2:
+
+```bash
+python -c "
+from vista_ocr.data.idl import IdlConfig, iter_idl
+import itertools
+shard = 'data/raw/idl/idl-train-00000.tar'
+n = sum(1 for _ in itertools.islice(iter_idl(IdlConfig(shards=[shard])), 200))
+print(f'{n} samples (expected: 200)')
+"
+```
+
+`0 samples` is a red flag — the loader is misconfigured against
+your shards' schema. Don't launch a multi-day chain with a broken
+data source; investigate first.
+
 #### Tokenizer audit before French (gate for J1b)
 
 Production SPM is English-heavy. Run the FR-coverage audit BEFORE
