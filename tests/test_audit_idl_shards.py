@@ -6,15 +6,20 @@ Inventory:
   must record an error row but NOT abort the audit. The error
   must appear (a) in the main per-shard health table's error
   column and (b) in the flagged-shards summary section.
+- ``test_audit_one_shard_with_in_memory_records`` -- monkeypatch
+  ``webdataset.WebDataset`` to yield in-memory records; assert
+  the resulting row matches the expected aggregates.
 """
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -52,6 +57,70 @@ def _healthy_row(shard_name: str) -> dict:
         "non_latin_lines": 0,
         "non_latin_frac": 0.0,
     }
+
+
+def test_audit_one_shard_with_in_memory_records(tmp_path: Path, monkeypatch):
+    """Monkeypatch ``webdataset.WebDataset`` AND
+    ``vista_ocr.data.idl._decode_idl_record`` so the per-shard
+    audit runs end-to-end without touching pypdfium2. Drive 3
+    in-memory records (2 with valid Samples, 1 that decodes to
+    nothing) through ``_audit_one_shard``; assert the aggregates
+    line up with the inputs.
+    """
+    from vista_ocr.data.types import Sample
+    from vista_ocr.tokenizer.tokenizer import Line
+
+    # Fake records: webdataset shape is just iterable of dicts.
+    fake_records = [
+        {"__key__": "rec0", "pdf": b"x", "json": b"{}"},
+        {"__key__": "rec1", "pdf": b"x", "json": b"{}"},
+        {"__key__": "rec2", "pdf": b"x", "json": b"{}"},
+    ]
+
+    monkeypatch.setattr(
+        "webdataset.WebDataset",
+        lambda *a, **kw: iter(fake_records),
+    )
+
+    img = Image.new("L", (1000, 800), 255)
+    sample_with_lines = Sample(
+        image=img,
+        lines=[
+            Line(text="hello world", bbox=(10, 10, 200, 40)),
+            Line(text="foo bar baz", bbox=(10, 50, 200, 80)),
+        ],
+        task="ocr_layout",
+    )
+
+    def fake_decode(record, cfg):
+        # rec0 + rec1 yield a Sample; rec2 yields nothing.
+        if record["__key__"] in ("rec0", "rec1"):
+            yield sample_with_lines
+
+    monkeypatch.setattr("vista_ocr.data.idl._decode_idl_record", fake_decode)
+
+    # Re-import the tool so it picks up the monkeypatched _decode_idl_record
+    # at call time (it does ``from vista_ocr.data.idl import ...`` inside the
+    # function, so the import lookup happens fresh each call -- no need to
+    # reload the tool module itself).
+    spec = importlib.util.spec_from_file_location(
+        "audit_idl_shards_tool_smoke", TOOL_PATH,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    row = mod._audit_one_shard("data/raw/idl/idl-train-00000.tar", n_records=10)
+    assert row["shard"] == "idl-train-00000.tar"
+    assert row["n_attempted"] == 3
+    assert row["decode_ok"] == 2
+    assert row["zero_line"] == 1
+    assert row["render_fail"] == 0
+    assert row["decode_ok_frac"] == 2 / 3
+    # 2 samples each with 2 lines = 4 total lines.
+    assert row["total_lines"] == 4
+    assert row["bbox_inside"] == 4  # all bboxes inside the 1000x800 image
+    assert row["bbox_inside_frac"] == 1.0
 
 
 def test_per_shard_failure_doesnt_kill_audit(tool, tmp_path: Path, monkeypatch):

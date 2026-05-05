@@ -75,17 +75,23 @@ def _audit_lines(
     sp,
     unk_id: int,
     lines_iter: Iterable[str],
-    n: int,
 ) -> dict:
     """Tokenize an iterable of plain-text lines; report on
-    fragmentation (chars/token, tokens/line) and ``<unk>`` rate."""
+    fragmentation (chars/token, tokens/line) and ``<unk>`` rate.
+
+    The input iterator is page-capped by the caller (one of the
+    ``_iter_*`` helpers, each of which slices to ``n_per_corpus``
+    samples). No internal cap is applied here -- adding one
+    creates two layers of capping that disagree silently. The
+    page cap is the single source of truth.
+    """
     chars_per_token: list[float] = []
     tokens_per_line: list[float] = []
     unk_lines = 0
     total_lines = 0
     total_tokens = 0
     total_unk = 0
-    for line in itertools.islice(lines_iter, n):
+    for line in lines_iter:
         line = line.strip()
         if not line:
             continue
@@ -253,7 +259,7 @@ def main() -> int:
         if shards:
             print(f"PDFA: {len(shards)} shards", file=sys.stderr)
             line_iter, samples_iter = _iter_pdfa(shards, args.n_per_corpus)
-            line_rows.append(("pdfa", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
+            line_rows.append(("pdfa", _audit_lines(sp, unk_id, line_iter)))
             page_rows.append(("pdfa", _audit_pages_truncation(
                 tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
             )))
@@ -263,7 +269,7 @@ def main() -> int:
         if shards:
             print(f"IDL: {len(shards)} shards", file=sys.stderr)
             line_iter, samples_iter = _iter_idl(shards, args.n_per_corpus)
-            line_rows.append(("idl", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
+            line_rows.append(("idl", _audit_lines(sp, unk_id, line_iter)))
             page_rows.append(("idl", _audit_pages_truncation(
                 tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
             )))
@@ -271,7 +277,7 @@ def main() -> int:
     if args.sroie_root and args.sroie_root.exists():
         print(f"SROIE: {args.sroie_root}", file=sys.stderr)
         line_iter, samples_iter = _iter_sroie(args.sroie_root, args.n_per_corpus)
-        line_rows.append(("sroie", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
+        line_rows.append(("sroie", _audit_lines(sp, unk_id, line_iter)))
         page_rows.append(("sroie", _audit_pages_truncation(
             tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
         )))

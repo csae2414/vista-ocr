@@ -117,6 +117,22 @@ def test_audit_pages_uses_build_target_ids_untruncated(tool, tokenizer):
     assert audit["target_tokens"]["max"] == float(max(expected_lengths))
 
 
+def test_audit_lines_drains_full_iter(tool, tokenizer):
+    """``_audit_lines`` must consume every item the caller hands
+    it; there is no internal cap. The single source of truth for
+    sample size is the page cap that the caller (one of the
+    ``_iter_*`` helpers) applies upstream. A regression that
+    re-introduced an ``n * 50`` line cap would hide tail-of-corpus
+    data from the audit.
+    """
+    sp = tokenizer.sp
+    unk_id = tokenizer.unk_id
+    lines = [f"line number {i}" for i in range(10)]
+    audit = tool._audit_lines(sp, unk_id, iter(lines))
+    # Every line was processed (none dropped, none capped).
+    assert audit["n_lines"] == 10
+
+
 def test_audit_pages_truncation_count_uses_max_target_tokens(tool, tokenizer):
     """Feed one short page and one synthesised long page whose
     pre-truncation length exceeds ``MAX_TARGET_TOKENS``. The audit

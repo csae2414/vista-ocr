@@ -38,6 +38,7 @@ import statistics
 import sys
 from pathlib import Path
 
+from vista_ocr.data.preprocess import is_latin_text
 from vista_ocr.utils.shard_glob import expand_shards
 
 
@@ -60,8 +61,6 @@ def _audit_one_shard(shard_path: str, n_records: int) -> dict:
     bbox_inside = 0
     non_latin_lines = 0
     total_lines = 0
-
-    from vista_ocr.data.preprocess import is_latin_text
 
     for raw in itertools.islice(pipeline, n_records):
         n_attempted += 1
