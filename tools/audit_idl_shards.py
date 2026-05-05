@@ -119,6 +119,7 @@ def _md_table(rows: list[dict]) -> str:
         ("p95_lines_per_page", "p95 lines/page"),
         ("bbox_inside_frac", "bbox-in-image"),
         ("non_latin_frac", "non-latin lines"),
+        ("error", "error"),
     ]
     out = ["| " + " | ".join(label for _, label in cols) + " |",
            "|" + "|".join(["---"] * len(cols)) + "|"]
@@ -128,6 +129,12 @@ def _md_table(rows: list[dict]) -> str:
             v = row.get(key, "")
             if isinstance(v, float):
                 cells.append(f"{v:.3f}")
+            elif key == "error":
+                # Truncate long exception messages so the table
+                # stays readable; keep enough to identify the
+                # failure mode.
+                msg = str(v).replace("|", "\\|").replace("\n", " ")
+                cells.append(msg[:80] + ("..." if len(msg) > 80 else ""))
             else:
                 cells.append(str(v))
         out.append("| " + " | ".join(cells) + " |")
@@ -152,15 +159,44 @@ def main() -> int:
     rows: list[dict] = []
     for sp in shards:
         print(f"  {Path(sp).name}", file=sys.stderr)
-        rows.append(_audit_one_shard(sp, args.n_per_shard))
+        try:
+            rows.append(_audit_one_shard(sp, args.n_per_shard))
+        except Exception as e:  # noqa: BLE001 -- audit must keep going
+            # One bad shard should not kill the audit. Record an
+            # error row so the operator sees the failure in the main
+            # table on a single scan, AND a follow-up flagged-shards
+            # entry summarises it. Auto-flag regardless of the
+            # decode-OK threshold (a row with error IS a fail).
+            print(f"    !! shard audit raised: {e}", file=sys.stderr)
+            rows.append({
+                "shard": Path(sp).name,
+                "n_attempted": 0,
+                "decode_ok": 0,
+                "decode_ok_frac": 0.0,
+                "zero_line": 0,
+                "render_fail": 0,
+                "median_lines_per_page": 0,
+                "p95_lines_per_page": 0,
+                "bbox_total": 0,
+                "bbox_inside": 0,
+                "bbox_inside_frac": 0.0,
+                "total_lines": 0,
+                "non_latin_lines": 0,
+                "non_latin_frac": 0.0,
+                "error": str(e),
+            })
 
-    flagged = [r for r in rows if r["decode_ok_frac"] < args.decode_ok_threshold]
+    # Flag both threshold-failures AND any row with an error set.
+    flagged = [
+        r for r in rows
+        if r.get("error") or r["decode_ok_frac"] < args.decode_ok_threshold
+    ]
 
     md = ["# IDL shard audit", ""]
     md.append(f"- Shards walked: {len(rows)}")
     md.append(f"- Records sampled per shard: {args.n_per_shard}")
     md.append(f"- decode-OK threshold: {args.decode_ok_threshold:.2f}")
-    md.append(f"- Flagged shards (decode-OK < threshold): **{len(flagged)}**")
+    md.append(f"- Flagged shards (decode-OK < threshold OR audit raised): **{len(flagged)}**")
     md.append("")
     md.append("## Per-shard health")
     md.append("")
@@ -170,8 +206,11 @@ def main() -> int:
         md.append("## Flagged shards")
         md.append("")
         for r in flagged:
-            md.append(f"- `{r['shard']}` -- decode-OK={r['decode_ok_frac']:.3f}, "
-                      f"zero-line={r['zero_line']}, render-fail={r['render_fail']}")
+            if r.get("error"):
+                md.append(f"- `{r['shard']}` -- AUDIT RAISED: {r['error']}")
+            else:
+                md.append(f"- `{r['shard']}` -- decode-OK={r['decode_ok_frac']:.3f}, "
+                          f"zero-line={r['zero_line']}, render-fail={r['render_fail']}")
         md.append("")
         md.append("Recommendation: exclude flagged shards from the IDL_SHARDS_GLOB ")
         md.append("for Run F, or re-download/re-derive the affected shards before relying ")
