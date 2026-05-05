@@ -16,9 +16,13 @@ paper does not specify) backed by sister-model evidence noted in commit
 messages and module docstrings.
 
 > **Status.** Architecture and full training pipeline implemented and
-> verified end-to-end on a single RTX 3090. Stage-1 calibration runs on
-> real PDFA pages; checkpoint + resume + validation work; all dataset
-> loaders (PDFA, IDL, IAM, MAURDOR, SROIE) tested. Long-form pretraining
+> verified end-to-end on a single RTX 3090 / L40S. Stage-1 calibration
+> runs on real PDFA pages; checkpoint + resume + validation work; all
+> dataset loaders (PDFA, IDL, IAM, MAURDOR, SROIE) tested. The chain
+> supports `DATA_MIX={pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth}`,
+> with a license-clean handwritten synth generator (Phase J) and an
+> optional unfrozen OCR-only stage 1b (Phase I) between the frozen
+> stage 1 and the multimodal stage 2. Long-form pretraining
 > (Stage-2 80K / Stage-3 70K steps) is one shell command away. Headline
 > finetune numbers are *not* yet reproduced — that needs the long
 > pretraining runs plus the licence-restricted IAM/MAURDOR/SROIE
@@ -39,9 +43,25 @@ messages and module docstrings.
   format from Fig. 7.
 - **Loss** = λ · L<sub>text</sub> + (1 − λ) · L<sub>loc</sub> with
   prompt-token masking and label smoothing.
-- **Three-stage curriculum** (calibration → multimodal → multitask)
-  with checkpoint + auto-resume, periodic validation, and ckpt_best on
-  val improvement.
+- **Curriculum** (calibration -> optional unfrozen-text-only ->
+  multimodal -> multitask) with checkpoint + auto-resume, periodic
+  validation, and ckpt_best on val improvement. Stage 1b
+  (`stage1b_run.py`, Phase I) is paper §3.6.1's unfrozen text-only
+  bridge between the frozen stage 1 and the multimodal stage 2;
+  off by default (`STAGE1B_STEPS=0`), opt in via env.
+- **Data mix** (`DATA_MIX` env on `pretrain_chain.sh`, Phase H + J)
+  selects one of `pdfa | pdfa+idl | pdfa+synth | pdfa+idl+synth`.
+  IDL is paper-comparable (60% real / 40% PDFA at default
+  `IDL_WEIGHT=0.6`); synth is the license-clean handwritten
+  generator (Phase J, opt-in). Stage 1 + 1b stay PDFA-only; mixing
+  applies to stages 2 + 3.
+- **Synthetic handwritten data**
+  (`vista_ocr.data.synth.handwritten.HandwrittenLineSynth`,
+  Phase J) generates pages from a local text corpus + bundled
+  OFL/Apache TTF font set with mask-derived bboxes. License-clean
+  approximation, **NOT a paper-equivalent reproduction** of
+  synthetic IAM/RIMES (per-writer variation not modeled).
+  See `docs/operator-runbook.md` §3.1 for the workflow.
 - **Speed**: bf16 autocast, encoder gradient checkpointing, KV-cache
   decoding, multi-worker DataLoader. Optional opt-in
   `MBartAttention -> SDPA` monkey-patch with a CI ship-gate (forward,
@@ -50,9 +70,10 @@ messages and module docstrings.
 - **Eval**: CER, WER, word-exact F1, Wolf & Jolion DetEval (paper
   ref [37]), Area-F1, AP@IoU{0.5, 0.6, 0.7, 0.8}.
 - **VRAM-aware page resolution** via `--page-preset {tiny, small,
-  medium, large, auto}` on the stage scripts; `auto` queries CUDA
-  VRAM and picks a sensible canvas (medium = 1100×850 fits the 24 GB
-  3090).
+  medium, large, paper, auto}` on the stage scripts; `auto` queries
+  CUDA VRAM and picks a sensible canvas (medium = 1100×850 fits the
+  24 GB 3090; large = 1400×1050 is the L40S default; paper =
+  2200×1700 matches paper §3.5).
 - **Decoder initialisation from Donut** (`--init-decoder-from donut`)
   per VISTA-OCR §3.2. Loads the BART text-decoder body from
   `naver-clova-ix/donut-base`; vocab-shaped tensors are skipped
@@ -71,9 +92,17 @@ messages and module docstrings.
   hot loop is pure I/O. Geometry-bound manifest, atomic write,
   resume on partial render.
 - **Dataset adapters** (`scripts/datasets/`) flatten benchmark-
-  specific layouts into our loader's expected form. SROIE shipped;
-  IAM / MAURDOR / PageXML are the planned slots.
-- **242 unit tests**, Sphinx API docs, MIT licensed.
+  specific layouts into our loader's expected form. SROIE shipped
+  (`setup_sroie.sh`); synthetic-corpus acquisition shipped
+  (`setup_synth_corpus.sh`, Phase J); IAM is licence-restricted at
+  acquisition time but the loader (`vista_ocr.data.iam`) is in
+  place; MAURDOR / PageXML loaders are the planned slots.
+- **Locked PDFA val/test split**: shard `0118` is the val shard
+  (used for `ckpt_best` selection); shard `0119` is the test shard,
+  touched only by `scripts/eval_run.sh`. Training scripts call
+  `assert_not_test_shard` to refuse the test shard.
+- **523 unit tests** (4 skipped on environments lacking DejaVu test
+  font), Sphinx API docs, MIT licensed.
 
 ## Quick start
 
@@ -117,7 +146,7 @@ to work as before (operators in mid-flight runs are unaffected).
 
 | Verb | Purpose |
 |---|---|
-| `vista-ocr stage {1\|2\|3}` | Pretraining stage (mirrors `scripts/stage{N}_run.py`). |
+| `vista-ocr stage {1\|1b\|2\|3}` | Pretraining stage (mirrors `scripts/stage{N}_run.py`). Stage 1b is the optional Phase-I unfrozen text-only bridge. |
 | `vista-ocr eval --manifest <jsonl>` | Evaluate a checkpoint against a JSONL manifest; writes a JSON sidecar. Computes recognition (CER/WER/word-F1) always; detection (DetEval/Area-F1/AP@IoU) when manifest has `bboxes`; AP@CER (region-OCR) with `--cer-ap-thresholds`. Paper-faithful SROIE detection rows via `--bbox-expand-px 2`. |
 | `vista-ocr finetune --train-manifest X --val-manifest Y --init-from K` | Generic manifest-driven finetune. |
 | `vista-ocr infer --folder <root>` | Decode every image in a folder; output JSONL with a `_meta` header (ckpt path/step, timestamp). |
@@ -165,7 +194,7 @@ For a richer mixed printed + handwritten corpus, also pull
 python scripts/download_hiertext.py
 ```
 
-### 3. Pretrain (stage-1 → stage-2 → stage-3, unattended)
+### 3. Pretrain (stage-1 -> [stage-1b] -> stage-2 -> stage-3, unattended)
 
 ```bash
 tmux new -s pretrain
@@ -173,19 +202,30 @@ tmux new -s pretrain
 # detach: Ctrl-b d ; reattach: tmux attach -t pretrain
 ```
 
-The chain runs all three stages back-to-back, auto-discovers the highest
-shard as the val set, writes `checkpoints/stage{1,2,3}/`, and **resumes
-automatically** if killed mid-run (just rerun the same command).
+The chain runs the configured stages back-to-back, uses the locked
+val shard `pdfa-eng-train-0118.tar`, writes `checkpoints/stage{1,1b,2,3}/`,
+and **resumes automatically** if killed mid-run (just rerun the same
+command). For supervised long runs use `pretrain_supervised.sh`,
+which wraps the chain in a restart-on-failure supervisor.
 
-Each stage script accepts `--page-preset {tiny,small,medium,large,auto}`
-(or explicit `--page-h`/`--page-w`); `auto` picks a canvas based on
-the visible CUDA VRAM (medium = 1100×850 on a 24 GB 3090). The stages
-also accept `--sdpa` to enable the SDPA monkey-patch, which runs the
-ship-gate first and writes the PASS line to
-`<out>/sdpa_manifest.txt` for paper-comparison reproducibility.
+Common env knobs (full list in the script header):
 
-Expect ≈ 0.13 s / step on a single RTX 3090 → roughly **6 hours**
-total at the default 20K + 80K + 70K steps. A100 is ~3× faster.
+| Env | Default | Effect |
+|---|---|---|
+| `DATA_MIX` | `pdfa` | One of `pdfa`, `pdfa+idl`, `pdfa+synth`, `pdfa+idl+synth`. Stages 2+3 only; stage 1 + 1b stay PDFA-only. |
+| `IDL_WEIGHT` | `0.6` | IDL fraction of the mix when `DATA_MIX` includes `idl`. |
+| `SYNTH_WEIGHT` | `0.2` | Synth fraction when `DATA_MIX` includes `synth`. Hard-fails if `IDL_WEIGHT + SYNTH_WEIGHT >= 1`. |
+| `STAGE1B_STEPS` | `0` | `0` skips stage 1b (legacy chain). Set ≥ 10000 for paper-faithful curriculum. |
+| `PAGE_PRESET` | `medium` | `tiny\|small\|medium\|large\|paper\|auto`; `auto` queries CUDA VRAM. |
+| `EARLY_STOP` | `0` | `1` enables EMA-smoothed plateau abort with auto-cap of `STAGE_N_STEPS`. |
+
+Each stage script also accepts `--page-preset` and `--sdpa` (the
+SDPA monkey-patch with ship-gate; manifest written to
+`<out>/sdpa_manifest.txt` for paper-comparison reproducibility).
+
+Expect ≈ 0.13 s / step on a single RTX 3090 -> roughly **6 hours**
+total at the default 20K + 80K + 70K steps with `medium` preset.
+At `large` preset on an L40S, expect ~2 s / step.
 
 ### 4. Finetune + benchmark
 
@@ -250,10 +290,11 @@ Three pretraining stages then per-dataset finetune:
 
 | Stage | Script | Decoder | Tasks | LR | Steps |
 |---|---|---|---|---|---|
-| 1 — calibration | `stage1_run.py` | frozen | OCR (text only) | 3e-4 | 20K + 30K |
-| 2 — multimodal | `stage2_run.py` | unfrozen | OCR + layout (interleaved) | 5e-5 | 80K |
-| 3 — multitask | `stage3_run.py` | unfrozen | OCR / OCR+layout / region_OCR / find_it | 3e-5 | 70K |
-| FT — per dataset | `finetune_eval.py` | unfrozen | dataset-specific | 1e-5 | 5K-10K |
+| 1 -- calibration | `stage1_run.py` | frozen | OCR (text only) | 3e-4 | 20K |
+| 1b -- bridge (Phase I, opt-in) | `stage1b_run.py` | unfrozen | OCR (text only, λ=1.0) | 5e-5 | 0 (default skip) / 10K |
+| 2 -- multimodal | `stage2_run.py` | unfrozen | OCR + layout (interleaved) | 5e-5 | 80K |
+| 3 -- multitask | `stage3_run.py` | unfrozen | OCR / OCR+layout / region_OCR / find_it | 3e-5 | 70K |
+| FT -- per dataset | `finetune_eval.py` | unfrozen | dataset-specific | 1e-5 | 5K-10K |
 
 All stages share:
 
@@ -273,31 +314,43 @@ vista-ocr/
 ├── docs/                Sphinx API docs (run: cd docs && make html)
 ├── scripts/
 │   ├── setup_data.sh              Helper: download PDFA + train tokenizer
-│   ├── pretrain_chain.sh          Helper: run stage-1 → stage-2 → stage-3
+│   ├── pretrain_chain.sh          Helper: stage 1 -> [1b] -> 2 -> 3
+│   ├── pretrain_supervised.sh     Restart-on-failure supervisor wrapper
 │   ├── finetune_chain.sh          Helper: per-dataset finetune + eval
+│   ├── eval_run.sh                Reproducible eval against locked test shard 0119
+│   ├── cache_dataset.py           Pre-render PDFA/IDL to a geometry-bound cache
 │   ├── download_pdfa.py           Pull N shards from HuggingFace
 │   ├── bootstrap_tokenizer.py     Train SPM on WikiText-2
-│   ├── stage1_run.py              Stage-1 calibration
-│   ├── stage2_run.py              Stage-2 multimodal
-│   ├── stage3_run.py              Stage-3 multitask
+│   ├── stage1_run.py              Stage 1 calibration (frozen decoder)
+│   ├── stage1b_run.py             Stage 1b bridge (Phase I; unfrozen text-only)
+│   ├── stage2_run.py              Stage 2 multimodal
+│   ├── stage3_run.py              Stage 3 multitask
 │   ├── finetune_eval.py           Per-dataset finetune + benchmark
 │   ├── ablate_lambda.py           λ ∈ {0.3, 0.5, 0.7} sweep
 │   ├── ablate_scheme.py           Original / Segmented / Unified ablation
 │   ├── decoder_ab.py              12-layer mBART vs 4-layer Donut
 │   ├── bench_dataloader.py        DataLoader workers/compile/SDPA bench
 │   ├── smoke_test_gpu.py          5-minute end-to-end GPU sanity
-│   └── diag_val_crash.py          CUDA-launch-blocking val diagnostic
+│   ├── diag_val_crash.py          CUDA-launch-blocking val diagnostic
+│   └── datasets/
+│       ├── setup_sroie.sh         Flatten SROIE 2019 into JSONL manifests
+│       └── setup_synth_corpus.sh  One-time corpus acquisition for Phase J synth
 ├── src/vista_ocr/
 │   ├── tokenizer/       SentencePiece + spatial grid + 3 schemes
 │   ├── models/          DANIEL encoder, mBART/Donut decoder, VistaOCR wrapper
 │   ├── ablation/        Ablation harness shared by ablate_*.py
 │   ├── data/            Preprocess, collate, multi-worker dataloader,
-│   │                    pdfa, idl, iam, maurdor, sroie loaders + synth/,
+│   │                    pdfa, idl, iam, maurdor, sroie loaders + synth/
+│   │                    (handwritten generator + factory + fonts),
 │   │                    BBox value object, PdfaShardReader
 │   ├── training/        Combined loss, schedules, callbacks, train loop
 │   ├── eval/            CER/WER, Wolf & Jolion DetEval, AP@IoU
 │   └── inference/       Greedy/beam generation + output parser
-└── tests/               242 unit tests
+├── tools/
+│   ├── audit_fr_coverage.py            Phase J0 #2 tokenizer FR-coverage gate
+│   └── synth_target_distributions.py   Phase J0 #3 sanity-band baseline
+├── corpora/synth/letterlike.txt        In-tree letter-shaped fixture (Phase J)
+└── tests/                              523 unit tests (4 skipped on non-DejaVu hosts)
 ```
 
 ## Paper faithfulness
@@ -341,18 +394,22 @@ ablation scripts under `scripts/`.
 | Architecture matches paper Section 3 | ✅ |
 | Tokenizer / 3 encoding schemes | ✅ |
 | Combined loss + prompt masking | ✅ |
-| Three-stage curriculum | ✅ |
+| Curriculum (1 -> [1b] -> 2 -> 3) | ✅ |
 | All five real dataset loaders | ✅ |
 | SynthDOG-bbox + SROIE-synth (paper appendix) | ✅ |
+| Phase H: paper-comparable PDFA + IDL data mix | ✅ |
+| Phase I: stage 1b unfrozen-OCR-only bridge (paper §3.6.1) | ✅ |
+| Phase J: license-clean handwritten synth + chain integration | ✅ |
 | End-to-end training on real PDFA + checkpoints | ✅ |
 | Eval metrics (CER, WER, F1, Wolf & Jolion, Area-F1, AP@IoU) | ✅ |
-| Stage-1 → Stage-2 → Stage-3 chain script | ✅ |
+| Locked PDFA val (0118) / test (0119) split | ✅ |
 | Sphinx API docs | ✅ |
-| 242 / 242 unit tests passing | ✅ |
+| 523 unit tests passing (4 skipped on non-DejaVu hosts) | ✅ |
 | SDPA fast attention (opt-in monkey-patch + ship-gate) | ✅ |
-| VRAM-aware page resolution presets | ✅ |
+| VRAM-aware page resolution presets (incl. paper @ 2200×1700) | ✅ |
 | Long pretraining runs at scale | 🟡 plumbing verified, runtime hours |
 | Per-dataset finetune numbers vs paper | 🟡 needs licence-restricted data |
+| Synthetic IAM/RIMES paper-equivalent (per-writer variation) | 🟡 license-clean approximation only |
 | `torch.compile` win | 🟡 needs fixed-bucket page sizes |
 
 ## Hardware notes
