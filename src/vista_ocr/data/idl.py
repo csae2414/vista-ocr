@@ -12,7 +12,7 @@ Schema as actually shipped in ``data/raw/idl/idl-train-*.tar``
   "poly": [...], "score": [...]}]}``. Per-page ``text`` / ``bbox`` /
   ``score`` are parallel arrays. ``bbox`` is normalised xywh in
   ``[0, 1]``; ``poly`` (4 ``{X, Y}`` corners) is provided too but
-  unused — the rectangle from xywh suffices for our line-level
+  unused -- the rectangle from xywh suffices for our line-level
   layout target.
 
 We re-use PDFA's render + bbox-conversion helpers via private import
@@ -77,7 +77,7 @@ def _extract_lines(
     img_h: int,
     min_score: float,
 ) -> list[Line]:
-    """Parallel-arrays → list[Line], dropping low-score and
+    """Parallel-arrays -> list[Line], dropping low-score and
     out-of-bounds bboxes. Does NOT filter by language; that's the
     caller's job (mirrors ``iter_pdfa``'s outer post-filter)."""
     out: list[Line] = []
@@ -138,7 +138,7 @@ def iter_idl(cfg: IdlConfig) -> Iterator[Sample]:
     Uses ``empty_check=False`` so a per-worker shard slice that
     happens to be empty (workers > shards) does not raise; matches
     :func:`vista_ocr.data.pdfa.iter_pdfa`. Per-record exceptions are
-    logged at WARNING and skipped — one malformed record (bad PDF,
+    logged at WARNING and skipped -- one malformed record (bad PDF,
     truncated JSON, etc.) cannot abort a multi-day training chain.
     """
     import webdataset as wds  # noqa: PLC0415

@@ -57,11 +57,12 @@ def run(args: argparse.Namespace) -> int:
     if args.source == "pdfa":
         samples = iter_pdfa(PdfaConfig(
             shards=args.shards, dpi=args.dpi,
-            score_threshold=args.score_threshold,
+            min_line_score=args.score_threshold,
         ))
     else:
         samples = iter_idl(IdlConfig(
-            shards=args.shards, score_threshold=args.score_threshold,
+            shards=args.shards, dpi=args.dpi,
+            min_line_score=args.score_threshold,
         ))
 
     LOG.info(

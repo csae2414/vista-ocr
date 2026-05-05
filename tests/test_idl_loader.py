@@ -2,27 +2,27 @@
 
 Inventory:
 
-- ``test_decode_idl_record_with_realistic_payload`` — happy path:
+- ``test_decode_idl_record_with_realistic_payload`` -- happy path:
   pdf+json record yields a single Sample with task / source / lines
   shape per the IDL schema.
-- ``test_decode_idl_record_drops_low_score_lines`` — score below
+- ``test_decode_idl_record_drops_low_score_lines`` -- score below
   min_line_score is filtered out.
-- ``test_decode_idl_record_normalized_xywh_to_pixel_xyxy`` — bbox
+- ``test_decode_idl_record_normalized_xywh_to_pixel_xyxy`` -- bbox
   conversion contract end-to-end on a known input.
-- ``test_decode_idl_record_legacy_png_record_yields_nothing`` — a
+- ``test_decode_idl_record_legacy_png_record_yields_nothing`` -- a
   record with the old png+json layout (which is what the broken
   loader expected) yields no Samples; the iterator returns ``[]``,
   not ``None``.
-- ``test_iter_idl_empty_check_false`` — WebDataset is built with
+- ``test_iter_idl_empty_check_false`` -- WebDataset is built with
   ``empty_check=False`` so a per-worker empty shard slice can't
   raise; matches PDFA.
-- ``test_iter_idl_skips_malformed_record_with_warning`` — one bad
+- ``test_iter_idl_skips_malformed_record_with_warning`` -- one bad
   record (truncated JSON) does not abort the iterator; a WARNING
   surfaces in caplog.
-- ``test_idl_config_defaults_mirror_pdfa_config`` — dpi /
+- ``test_idl_config_defaults_mirror_pdfa_config`` -- dpi /
   min_line_score / flatten_multi_page default to the same values as
   PdfaConfig, locking the symmetry the loader rewrite assumes.
-- ``test_iter_idl_yields_real_samples`` — gated real-shard smoke
+- ``test_iter_idl_yields_real_samples`` -- gated real-shard smoke
   (skip when ``data/raw/idl/idl-train-00000.tar`` absent). Pre-fix
   yielded 0; post-fix should yield > 10.
 
@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import logging
-from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -85,7 +84,7 @@ def patched_render(monkeypatch):
     the drop_blank gate."""
     img = Image.new("L", (1000, 800), 255)
     # Paint a 600x500 black block in the middle (~37% of page area)
-    # — well above any blank-image threshold.
+    # -- well above any blank-image threshold.
     from PIL import ImageDraw
     ImageDraw.Draw(img).rectangle((100, 100, 700, 600), fill=0)
     monkeypatch.setattr(
@@ -127,7 +126,7 @@ def test_decode_idl_record_drops_low_score_lines(patched_render):
 
 def test_decode_idl_record_normalized_xywh_to_pixel_xyxy(patched_render):
     """Pin the bbox conversion contract: normalised xywh
-    [0.1, 0.2, 0.3, 0.05] on a 1000x800 image → pixel xyxy
+    [0.1, 0.2, 0.3, 0.05] on a 1000x800 image -> pixel xyxy
     (100, 160, 400, 200)."""
     cfg = IdlConfig(shards=[])
     payload = _payload(
@@ -143,7 +142,7 @@ def test_decode_idl_record_normalized_xywh_to_pixel_xyxy(patched_render):
 def test_decode_idl_record_legacy_png_record_yields_nothing(patched_render):
     """A record with only the old png+json layout (what the broken
     pre-fix loader expected) yields nothing now: the iterator
-    returns []. NOT None — _decode_idl_record is an iterator."""
+    returns []. NOT None -- _decode_idl_record is an iterator."""
     cfg = IdlConfig(shards=[])
     legacy = {
         "__key__": "legacy",
