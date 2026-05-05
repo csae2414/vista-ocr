@@ -119,6 +119,63 @@ def test_build_target_ids_find_it_no_match_emits_no_bbox(tokenizer: VistaTokeniz
     assert spatial_count == 0
 
 
+# ---------- truncate keyword (used by tools/audit_tokenizer.py) ----------
+
+
+def _long_layout_sample(n_lines: int) -> Sample:
+    """Synthesise a ``Sample`` with enough lines to blow past
+    ``MAX_TARGET_TOKENS`` under ``ocr_layout`` serialisation."""
+    return Sample(
+        image=None,
+        lines=[
+            Line(f"line {i} fox jumps over lazy dog", (10 + (i % 4) * 50, 20 + i * 10, 200, 40 + i * 10))
+            for i in range(n_lines)
+        ],
+        task="ocr_layout",
+    )
+
+
+def test_build_target_ids_truncates_by_default(tokenizer: VistaTokenizer):
+    """Production behaviour: a Sample whose serialised target
+    exceeds ``MAX_TARGET_TOKENS`` is clipped to that length."""
+    from vista_ocr.data.collate import MAX_TARGET_TOKENS
+    s = _long_layout_sample(n_lines=400)
+    seq, _plen = build_target_ids(tokenizer, s)
+    assert len(seq) == MAX_TARGET_TOKENS
+
+
+def test_build_target_ids_returns_full_length_when_truncate_false(tokenizer: VistaTokenizer):
+    """Audit / diagnostics path: ``truncate=False`` returns the
+    pre-truncation sequence so tools can measure truncation
+    pressure rather than read the post-clip ceiling."""
+    from vista_ocr.data.collate import MAX_TARGET_TOKENS
+    s = _long_layout_sample(n_lines=400)
+    seq, _plen = build_target_ids(tokenizer, s, truncate=False)
+    assert len(seq) > MAX_TARGET_TOKENS, (
+        f"expected pre-truncation length > {MAX_TARGET_TOKENS}, "
+        f"got {len(seq)} (did MAX_TARGET_TOKENS get raised?)"
+    )
+    # The full sequence must still start with bos and end with eos.
+    assert seq[0] == tokenizer.bos_id
+    assert seq[-1] == tokenizer.eos_id
+
+
+def test_build_target_ids_short_sample_unchanged_under_truncate_false(tokenizer: VistaTokenizer):
+    """Regression sanity: a Sample that does not need truncation
+    produces the same sequence under ``truncate=True`` and
+    ``truncate=False``. The keyword is opt-out for long pages
+    only; it must not change short-page behaviour."""
+    s = Sample(
+        image=None,
+        lines=[Line("hello", (10, 20, 100, 40))],
+        task="ocr_layout",
+    )
+    seq_default, plen_default = build_target_ids(tokenizer, s)
+    seq_no_trunc, plen_no_trunc = build_target_ids(tokenizer, s, truncate=False)
+    assert seq_default == seq_no_trunc
+    assert plen_default == plen_no_trunc
+
+
 def test_collate_pads_to_max_in_batch(tokenizer: VistaTokenizer):
     from PIL import Image
 

@@ -15,19 +15,30 @@ subword vocabulary fragments aggressively. The risk:
 This tool quantifies the risk before Run F is planned. Cheap,
 read-only, runs in minutes against a small sample of each corpus.
 
+Truncation pressure is measured against the production helper
+:func:`vista_ocr.data.collate.build_target_ids` called with
+``truncate=False`` so the audit observes the **pre-truncation**
+target length. A naive call would silently cap at
+``MAX_TARGET_TOKENS`` and report a meaningless truncation rate.
+
+SROIE is read via ``--sroie-root <path>`` driving
+:func:`vista_ocr.data.sroie.iter_sroie`. The manifest path is NOT
+supported because manifest records may lack layout bboxes; without
+bboxes the ``ocr_layout`` task length is undefined.
+
 Usage::
 
     python tools/audit_tokenizer.py \\
         --spm data/processed/vocab/sp_en_16k.model \\
         --pdfa-shards 'data/raw/pdfa/pdfa-eng-train-{0000..0005}.tar' \\
         --idl-shards  'data/raw/idl/idl-train-*.tar' \\
-        --sroie-manifest data/sroie/manifests/train.jsonl \\
+        --sroie-root  data/raw/SROIE2019 \\
+        --task ocr_layout \\
         --n-per-corpus 500 \\
-        --max-target-tokens 2048 \\
         --out notes/tokenizer_audit.md
 
-Any of ``--pdfa-shards``, ``--idl-shards``, ``--sroie-manifest``
-may be omitted; the corpus is skipped if absent.
+Any of ``--pdfa-shards``, ``--idl-shards``, ``--sroie-root`` may
+be omitted; the corpus is skipped if absent.
 """
 from __future__ import annotations
 
@@ -36,8 +47,13 @@ import itertools
 import statistics
 import sys
 from collections.abc import Iterable, Iterator
+from dataclasses import replace
 from pathlib import Path
 
+from vista_ocr.data.collate import MAX_TARGET_TOKENS, build_target_ids
+from vista_ocr.data.types import Sample
+from vista_ocr.tokenizer.spatial_tokens import SpatialGrid
+from vista_ocr.tokenizer.tokenizer import VistaTokenizer
 from vista_ocr.utils.shard_glob import expand_shards
 
 
@@ -96,76 +112,77 @@ def _audit_lines(
 
 
 def _audit_pages_truncation(
-    sp,
-    pages_iter: Iterator[list[str]],
+    tokenizer: VistaTokenizer,
+    samples_iter: Iterator[Sample],
     n: int,
+    task: str,
     max_target_tokens: int,
 ) -> dict:
-    """For each page (list of line texts), compute the serialized
-    target length the trainer would see (lines joined with newline)
-    and report the fraction that exceed ``max_target_tokens``.
+    """For each Sample, compute the **exact pre-truncation** target
+    length the trainer would see (BOS + prompt + output + EOS,
+    including spatial tokens for ``ocr_layout``) by calling
+    :func:`build_target_ids` with ``truncate=False``. Report the
+    fraction whose pre-truncation length exceeds
+    ``max_target_tokens``.
 
-    The actual production target is more elaborate (BOS + prompt +
-    output tokens + EOS, with spatial tokens for ocr_layout). We
-    approximate with raw text-token count + a small constant; the
-    relative shape across corpora is what matters.
+    Returns target_tokens percentiles + truncated count + frac.
+    The ``truncate=False`` keyword on ``build_target_ids`` is the
+    contract this audit depends on; a regression catch lives in
+    ``tests/test_data.py::test_build_target_ids_returns_full_length_when_truncate_false``.
     """
-    raw_lengths: list[int] = []
+    target_lengths: list[int] = []
     truncated = 0
     total = 0
-    for page_lines in itertools.islice(pages_iter, n):
-        if not page_lines:
+    for sample in itertools.islice(samples_iter, n):
+        if not sample.lines:
             continue
-        joined = "\n".join(line.strip() for line in page_lines if line.strip())
-        if not joined:
+        # Override the sample's task so the audit reports the
+        # task-specific truncation rate the operator selected.
+        s = sample if sample.task == task else replace(sample, task=task)
+        try:
+            seq, _prompt_len = build_target_ids(tokenizer, s, truncate=False)
+        except ValueError:
+            # Some tasks need a query_text/query_bbox the audit
+            # doesn't synthesise (region_ocr, find_it). Skip cleanly.
             continue
-        ids = sp.EncodeAsIds(joined)
-        # Approximate prompt+sentinels overhead; not exact but stable
-        # across corpora so the relative truncation rate is meaningful.
-        approx_target_len = len(ids) + 8
-        raw_lengths.append(approx_target_len)
+        target_len = len(seq)
+        target_lengths.append(target_len)
         total += 1
-        if approx_target_len > max_target_tokens:
+        if target_len > max_target_tokens:
             truncated += 1
     return {
         "n_pages": total,
-        "approx_target_tokens": _percentiles([float(x) for x in raw_lengths]),
+        "target_tokens": _percentiles([float(x) for x in target_lengths]),
         "truncated_pages": truncated,
         "truncated_frac": truncated / max(total, 1),
         "max_target_tokens": max_target_tokens,
+        "task": task,
     }
 
 
-def _iter_pdfa_lines(shards: list[str], n: int) -> tuple[Iterator[str], Iterator[list[str]]]:
+def _materialise_samples(samples: Iterator[Sample], n: int) -> list[Sample]:
+    """Pull at most ``n`` Samples eagerly so we can produce two
+    independent views (line iter + page iter) without re-driving
+    the (slow) underlying loader."""
+    return list(itertools.islice(samples, n))
+
+
+def _iter_pdfa(shards: list[str], n: int) -> tuple[Iterator[str], Iterator[Sample]]:
     from vista_ocr.data.pdfa import PdfaConfig, iter_pdfa
-    samples = itertools.islice(iter_pdfa(PdfaConfig(shards=shards)), n)
-    samples = list(samples)
-    line_iter = (ln.text for s in samples for ln in s.lines)
-    page_iter = ([ln.text for ln in s.lines] for s in samples)
-    return line_iter, page_iter
+    samples = _materialise_samples(iter_pdfa(PdfaConfig(shards=shards)), n)
+    return ((ln.text for s in samples for ln in s.lines), iter(samples))
 
 
-def _iter_idl_lines(shards: list[str], n: int) -> tuple[Iterator[str], Iterator[list[str]]]:
+def _iter_idl(shards: list[str], n: int) -> tuple[Iterator[str], Iterator[Sample]]:
     from vista_ocr.data.idl import IdlConfig, iter_idl
-    samples = list(itertools.islice(iter_idl(IdlConfig(shards=shards)), n))
-    line_iter = (ln.text for s in samples for ln in s.lines)
-    page_iter = ([ln.text for ln in s.lines] for s in samples)
-    return line_iter, page_iter
+    samples = _materialise_samples(iter_idl(IdlConfig(shards=shards)), n)
+    return ((ln.text for s in samples for ln in s.lines), iter(samples))
 
 
-def _iter_sroie_lines(manifest_path: Path, n: int) -> tuple[Iterator[str], Iterator[list[str]]]:
-    import json
-    samples: list[list[str]] = []
-    with manifest_path.open() as f:
-        for raw in itertools.islice(f, n):
-            rec = json.loads(raw)
-            ref = rec.get("ref", "")
-            if not ref:
-                continue
-            samples.append(ref.splitlines())
-    line_iter = (ln for page in samples for ln in page)
-    page_iter = (page for page in samples)
-    return line_iter, page_iter
+def _iter_sroie(root: Path, n: int) -> tuple[Iterator[str], Iterator[Sample]]:
+    from vista_ocr.data.sroie import SroieConfig, iter_sroie
+    samples = _materialise_samples(iter_sroie(SroieConfig(root=root)), n)
+    return ((ln.text for s in samples for ln in s.lines), iter(samples))
 
 
 def _md_table(rows: list[tuple[str, dict]], cols: list[str]) -> str:
@@ -199,26 +216,33 @@ def main() -> int:
     p.add_argument("--pdfa-shards", default=None,
                    help="Bash-style glob, e.g. 'data/raw/pdfa/pdfa-eng-train-{0000..0005}.tar'")
     p.add_argument("--idl-shards", default=None)
-    p.add_argument("--sroie-manifest", type=Path, default=None)
+    p.add_argument("--sroie-root", type=Path, default=None,
+                   help="SROIE 2019 raw tree containing img/ + box/ subdirs (drives iter_sroie). "
+                        "The manifest path is NOT supported -- manifest records may lack bboxes "
+                        "and ocr_layout target length is undefined without them.")
+    p.add_argument("--task", default="ocr_layout", choices=("ocr", "ocr_layout"),
+                   help="Task to use for the truncation audit. ocr_layout is the production "
+                        "stage-2/3 path and includes spatial tokens around each line; ocr "
+                        "produces a pure text target.")
     p.add_argument("--n-per-corpus", type=int, default=500,
                    help="Sample this many pages per corpus.")
-    p.add_argument("--max-target-tokens", type=int, default=2048,
-                   help="Same as vista_ocr.data.collate.MAX_TARGET_TOKENS.")
+    p.add_argument("--max-target-tokens", type=int, default=MAX_TARGET_TOKENS,
+                   help="Defaults to vista_ocr.data.collate.MAX_TARGET_TOKENS.")
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
-
-    try:
-        import sentencepiece as spm
-    except ImportError:
-        print("sentencepiece not installed", file=sys.stderr)
-        return 1
 
     if not args.spm.exists():
         print(f"SPM model not found: {args.spm}", file=sys.stderr)
         return 1
-    sp = spm.SentencePieceProcessor()
-    sp.Load(str(args.spm))
-    unk_id = sp.piece_to_id("<unk>")
+
+    # Build the production VistaTokenizer; the per-line <unk> audit
+    # reaches through to the underlying SentencePieceProcessor via
+    # ``tokenizer.sp``. The truncation audit calls build_target_ids
+    # which requires the full tokenizer + spatial grid.
+    grid = SpatialGrid(canvas_h=3508, canvas_w=2480, quantizer_px=10, scheme="original")
+    tokenizer = VistaTokenizer(spm_model_path=str(args.spm), grid=grid)
+    sp = tokenizer.sp
+    unk_id = tokenizer.unk_id
     vocab_size = sp.GetPieceSize()
 
     line_rows: list[tuple[str, dict]] = []
@@ -228,23 +252,29 @@ def main() -> int:
         shards = _resolve_locked_pdfa_shards(args.pdfa_shards)
         if shards:
             print(f"PDFA: {len(shards)} shards", file=sys.stderr)
-            line_iter, page_iter = _iter_pdfa_lines(shards, args.n_per_corpus)
+            line_iter, samples_iter = _iter_pdfa(shards, args.n_per_corpus)
             line_rows.append(("pdfa", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
-            page_rows.append(("pdfa", _audit_pages_truncation(sp, page_iter, args.n_per_corpus, args.max_target_tokens)))
+            page_rows.append(("pdfa", _audit_pages_truncation(
+                tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
+            )))
 
     if args.idl_shards:
         shards = expand_shards(args.idl_shards)
         if shards:
             print(f"IDL: {len(shards)} shards", file=sys.stderr)
-            line_iter, page_iter = _iter_idl_lines(shards, args.n_per_corpus)
+            line_iter, samples_iter = _iter_idl(shards, args.n_per_corpus)
             line_rows.append(("idl", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
-            page_rows.append(("idl", _audit_pages_truncation(sp, page_iter, args.n_per_corpus, args.max_target_tokens)))
+            page_rows.append(("idl", _audit_pages_truncation(
+                tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
+            )))
 
-    if args.sroie_manifest and args.sroie_manifest.exists():
-        print(f"SROIE: {args.sroie_manifest}", file=sys.stderr)
-        line_iter, page_iter = _iter_sroie_lines(args.sroie_manifest, args.n_per_corpus)
+    if args.sroie_root and args.sroie_root.exists():
+        print(f"SROIE: {args.sroie_root}", file=sys.stderr)
+        line_iter, samples_iter = _iter_sroie(args.sroie_root, args.n_per_corpus)
         line_rows.append(("sroie", _audit_lines(sp, unk_id, line_iter, args.n_per_corpus * 50)))
-        page_rows.append(("sroie", _audit_pages_truncation(sp, page_iter, args.n_per_corpus, args.max_target_tokens)))
+        page_rows.append(("sroie", _audit_pages_truncation(
+            tokenizer, samples_iter, args.n_per_corpus, args.task, args.max_target_tokens,
+        )))
 
     if not line_rows:
         print("No corpora resolved; nothing to audit.", file=sys.stderr)
@@ -255,15 +285,18 @@ def main() -> int:
     md.append(f"- Vocab size: {vocab_size}")
     md.append(f"- Sample size: ~{args.n_per_corpus} pages per corpus")
     md.append(f"- Truncation threshold: `MAX_TARGET_TOKENS={args.max_target_tokens}`")
+    md.append(f"- Task: `{args.task}` (target length includes BOS + prompt + output + EOS, "
+              f"plus spatial tokens for ocr_layout). Computed via "
+              f"`build_target_ids(truncate=False)` so reported lengths are pre-truncation.")
     md.append("")
     md.append("## Per-line tokenization")
     md.append("")
     md.append(_md_table(line_rows, ["n_lines", "unk_lines_frac", "unk_tokens_frac",
                                      "chars_per_token", "tokens_per_line"]))
     md.append("")
-    md.append("## Per-page target length (truncation pressure)")
+    md.append(f"## Per-page target length (truncation pressure, task={args.task})")
     md.append("")
-    md.append(_md_table(page_rows, ["n_pages", "approx_target_tokens",
+    md.append(_md_table(page_rows, ["n_pages", "target_tokens",
                                      "truncated_pages", "truncated_frac"]))
     md.append("")
     md.append("## Reading the table")
@@ -272,9 +305,9 @@ def main() -> int:
     md.append("  Anything above ~0.5% is a label-quality red flag (the model learns to predict `<unk>`).")
     md.append("- **`chars_per_token` mean**: 4.0+ on prose-like text is healthy. ")
     md.append("  < 2.0 indicates heavy fragmentation (typical for digit-rich, address-rich OCR labels).")
-    md.append("- **`truncated_frac`**: fraction of pages whose serialized target exceeds ")
+    md.append("- **`truncated_frac`**: fraction of pages whose pre-truncation target exceeds ")
     md.append(f"  `MAX_TARGET_TOKENS={args.max_target_tokens}`. Anything above ~5% silently drops training signal at collate.")
-    md.append("- **`approx_target_tokens` p99**: if this is close to or exceeds the truncation threshold, ")
+    md.append("- **`target_tokens` p99**: if this is close to or exceeds the truncation threshold, ")
     md.append("  the long-page tail is paying compute and getting cut off.")
     md.append("")
     md.append("## Recommended actions")

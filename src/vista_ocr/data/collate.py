@@ -40,9 +40,30 @@ class Batch:
 MAX_TARGET_TOKENS: int = 2048
 
 
-def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[int], int]:
-    """Construct ``[prompt..., output..., </s>]`` and return the prompt
-    length so the trainer can mask it out of the loss."""
+def build_target_ids(
+    tokenizer: VistaTokenizer,
+    sample: Sample,
+    *,
+    truncate: bool = True,
+) -> tuple[list[int], int]:
+    """Construct ``[bos, prompt..., output..., </s>]`` and return the
+    prompt length so the trainer can mask it out of the loss.
+
+    :param tokenizer: tokenizer producing per-task prompts and the
+        spatial-token grid for ``ocr_layout`` / ``find_it``.
+    :param sample: the :class:`Sample` to serialise.
+    :param truncate: When ``True`` (default), clip the returned
+        sequence to :data:`MAX_TARGET_TOKENS` while preserving the
+        prompt and final EOS. Set to ``False`` for audit and
+        diagnostics paths that need the pre-truncation length to
+        measure truncation pressure (e.g. ``tools/audit_tokenizer.py``).
+        Production training callers must keep the default so the
+        bf16 self-attention bound described in
+        :data:`MAX_TARGET_TOKENS` stays enforced.
+
+    Keyword-only on purpose: a future positional misuse cannot
+    silently disable the production clip.
+    """
     if sample.task == "ocr":
         prompt = tokenizer.build_ocr_prompt(with_layout=False)
         output = []
@@ -81,8 +102,9 @@ def build_target_ids(tokenizer: VistaTokenizer, sample: Sample) -> tuple[list[in
 
     # Truncate runaway sequences. Keep the prompt intact (otherwise the
     # task-conditioning header is lost) and the trailing eos_id; clip the
-    # middle.
-    if len(seq) > MAX_TARGET_TOKENS:
+    # middle. Skipped when ``truncate=False`` so audit paths can observe
+    # the true pre-truncation length.
+    if truncate and len(seq) > MAX_TARGET_TOKENS:
         keep_after_prompt = MAX_TARGET_TOKENS - prompt_len - 1
         seq = seq[:prompt_len] + seq[prompt_len: prompt_len + keep_after_prompt] + [tokenizer.eos_id]
     return seq, prompt_len
